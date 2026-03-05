@@ -1,0 +1,2 @@
+# Scripts con LF para WSL/Linux
+*.sh text eol=lf

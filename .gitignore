@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual envs
+.venv/
+venv/
+
+# Artifacts and data
+artifacts/
+data/
+*.png
+*.jpg
+*.jpeg
+*.npy
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Env
+.env
+.env.*
+!.env.example
+docker-compose.openai.yml
+
+# Certificados / claves
+*.pem
+*.crt
+*.cer
+*.key
+*.p12
+*.pfx
+
+# Logs
+*.log
+
+# Claude Code
+CLAUDE.md

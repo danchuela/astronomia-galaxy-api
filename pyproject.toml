@@ -1,0 +1,75 @@
+[project]
+name = "astronomia-galaxy-api"
+version = "0.1.0"
+description = "Galaxy analysis API: segmentation, measurements, target resolution, image fetching."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.116.0",
+  "uvicorn>=0.35.0",
+  "pydantic>=2.11.0",
+  "numpy>=2.3.0",
+  "pillow>=11.3.0",
+  "requests>=2.32.0",
+  "langchain>=0.3.0",
+  "langchain-openai>=0.3.0",
+  "langgraph>=0.2.0",
+  "openai>=1.60.0",
+  "python-dotenv>=1.0.0",
+  "sep>=1.4.1",
+  "statmorph>=0.5.0",
+  "scipy>=1.13.0",
+  "astropy>=6.0.0",
+  "photutils>=2.0.0",
+  "matplotlib>=3.9.0",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.4.0",
+  "ruff>=0.12.0",
+  "black>=24.8.0",
+  "mypy>=1.11.0",
+  "pre-commit>=3.8.0",
+  "types-requests>=2.32.4",
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [
+  ".venv",
+  "artifacts",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Header"]
+
+[tool.ruff.lint.per-file-ignores]
+"apps/api/main.py" = ["E402"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
+disable_error_code = ["import-untyped"]
+exclude = [
+  "artifacts",
+  ".venv",
+]
+
+[[tool.mypy.overrides]]
+module = ["tifffile", "tifffile.*"]
+follow_imports = "skip"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
