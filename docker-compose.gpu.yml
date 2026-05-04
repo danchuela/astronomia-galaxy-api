@@ -1,0 +1,10 @@
+# GPU: docker compose -f docker-compose.gpu.yml up --build
+services:
+  api:
+    extends:
+      file: docker-compose.yml
+      service: api
+    gpus: all
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility

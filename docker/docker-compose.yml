@@ -1,0 +1,5 @@
+# Includes the root compose file, which loads .env automatically.
+# From the repo root: docker compose up --build
+# Alternative: docker compose -f docker/docker-compose.yml up --build
+include:
+  - ../docker-compose.yml
