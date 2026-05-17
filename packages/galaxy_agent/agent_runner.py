@@ -28,6 +28,15 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_TASK: TaskType = "morphology_summary"
 _PLACEHOLDER_TARGET = "from conversation"
+_ANALYSIS_TASKS: set[TaskType] = {
+    "morphology_summary",
+    "segment",
+    "measure_basic",
+    "cas",
+    "radial_profile",
+    "sersic",
+    "isophotes",
+}
 
 
 class AgentRunner:
@@ -59,6 +68,8 @@ class AgentRunner:
                     request_id=request.request_id,
                     summary=TARGET_REQUIRED_MESSAGE,
                 )
+            if self._must_open_viewer_before_analysis(resolved):
+                resolved = self._as_viewer_setup_request(resolved)
 
             return self.orchestrator.run(request=resolved, langsmith_enabled=self.langsmith_enabled)
         except Exception:
@@ -94,6 +105,21 @@ class AgentRunner:
             and not has_coords
             and not has_view
         )
+
+    def _has_confirmed_viewer(self, request: AnalyzeRequest) -> bool:
+        return bool(
+            request.view_ra_deg is not None
+            and request.view_dec_deg is not None
+            and (request.view_hips_id or "").strip()
+        )
+
+    def _must_open_viewer_before_analysis(self, request: AnalyzeRequest) -> bool:
+        return request.task in _ANALYSIS_TASKS and not self._has_confirmed_viewer(request)
+
+    def _as_viewer_setup_request(self, request: AnalyzeRequest) -> AnalyzeRequest:
+        if request.target is None:
+            return request
+        return request.to_resolved_request(target=request.target, task="resolve")
 
     def _build_success_response(self, request_id: str, summary: str) -> AnalyzeResponse:
         return AnalyzeResponse(
@@ -149,6 +175,8 @@ class AgentRunner:
                     summary=TARGET_REQUIRED_MESSAGE,
                 )
                 return
+            if self._must_open_viewer_before_analysis(resolved):
+                resolved = self._as_viewer_setup_request(resolved)
 
             yield from self.orchestrator.run_stream(
                 request=resolved, langsmith_enabled=self.langsmith_enabled
