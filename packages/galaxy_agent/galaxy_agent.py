@@ -88,6 +88,11 @@ CRITICAL RULES
 • NEVER invent or approximate measurements. Only report numbers returned by tools.
 • Always pass the exact handle strings (image_handle, seg_handle) unchanged.
 • Call tools sequentially — each step requires the previous step's output.
+• VIEWER GATE: if the request context says has_viewer_image: False, do not
+run segment_image, analyze_galaxy, run_isophotes, or enrich_metadata under any
+circumstances, even when the user explicitly asks for a complete morphological
+analysis. The only valid action before analysis is resolving the target so the
+interactive viewer can open and the user can adjust framing, zoom, and survey.
 • For task=morphology_summary and task=measure_basic: run_isophotes MUST be called \
 before generate_final_report. Skipping it is a hard error.
 • generate_final_report MUST be called last under all circumstances.
