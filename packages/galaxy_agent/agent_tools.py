@@ -261,8 +261,8 @@ def make_tool_resolve_and_fetch_image(
         """Resolve the astronomical target and acquire the image.
 
         Handles three acquisition paths automatically:
-        1. Viewer canvas image_data (base64 JPEG) — decode and save directly.
-        2. Active viewer with HiPS ID — download frame via hips2fits API.
+        1. Active viewer with HiPS ID — download frame via hips2fits API.
+        2. Viewer canvas image_data (base64 JPEG) — last-resort fallback.
         3. Full resolve pipeline — SESAME name/coordinate resolution + survey download
            with automatic fallback chain (SDSS → DSS2 → GALEX → 2MASS → HiPS).
 
@@ -295,24 +295,7 @@ def make_tool_resolve_and_fetch_image(
                 "dec_deg": resolved.dec_deg,
             }
 
-        if has_viewer and request.image_data:
-            raw = request.image_data
-            if "," in raw:
-                raw = raw.split(",", 1)[1]
-            image_bytes = base64.b64decode(raw)
-            artifact = artifact_store.save_image(rid, image_bytes)
-            artifacts.append(artifact)
-            image_path = artifact.path
-            size = request.view_size_arcmin or 10.0
-            coordinates = {
-                "ra_deg": request.view_ra_deg,
-                "dec_deg": request.view_dec_deg,
-                "survey_used": request.view_hips_id,
-                "hips_id": request.view_hips_id,
-                "size_arcmin": size,
-            }
-
-        elif has_viewer and request.view_hips_id:
+        if has_viewer and request.view_hips_id:
             size = request.view_size_arcmin or 10.0
             remote_url = get_image_url_from_hips_id(
                 request.view_ra_deg,  # type: ignore[arg-type]
@@ -325,6 +308,23 @@ def make_tool_resolve_and_fetch_image(
             artifact = artifact_store.save_image(rid, resp.content)
             artifacts.append(artifact)
             image_path = artifact.path
+            coordinates = {
+                "ra_deg": request.view_ra_deg,
+                "dec_deg": request.view_dec_deg,
+                "survey_used": request.view_hips_id,
+                "hips_id": request.view_hips_id,
+                "size_arcmin": size,
+            }
+
+        elif has_viewer and request.image_data:
+            raw = request.image_data
+            if "," in raw:
+                raw = raw.split(",", 1)[1]
+            image_bytes = base64.b64decode(raw)
+            artifact = artifact_store.save_image(rid, image_bytes)
+            artifacts.append(artifact)
+            image_path = artifact.path
+            size = request.view_size_arcmin or 10.0
             coordinates = {
                 "ra_deg": request.view_ra_deg,
                 "dec_deg": request.view_dec_deg,

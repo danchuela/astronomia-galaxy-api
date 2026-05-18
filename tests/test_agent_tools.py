@@ -121,7 +121,7 @@ def test_resolve_and_fetch_image_full_pipeline(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_resolve_and_fetch_image_viewer_base64(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Viewer canvas path decodes base64 and stores image without calling resolve_and_fetch."""
+    """Viewer canvas path is a fallback when HiPS metadata is unavailable."""
     import base64
 
     fake_image = _fake_ndarray()
@@ -137,7 +137,6 @@ def test_resolve_and_fetch_image_viewer_base64(monkeypatch: pytest.MonkeyPatch) 
         task="morphology_summary",
         view_ra_deg=10.68,
         view_dec_deg=41.27,
-        view_hips_id="CDS/P/SDSS9/color",
         image_data=b64,
     )
 
@@ -146,6 +145,51 @@ def test_resolve_and_fetch_image_viewer_base64(monkeypatch: pytest.MonkeyPatch) 
 
     assert result["image_handle"] == "image:req-canvas"
     assert registry.get("image:req-canvas") is fake_image
+
+
+def test_resolve_and_fetch_image_prefers_viewer_hips_over_canvas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Viewer analysis uses a fresh HiPS cutout instead of a possibly stale canvas capture."""
+    fake_image = _fake_ndarray()
+    monkeypatch.setattr("packages.galaxy_agent.agent_tools.load_image", lambda _: fake_image)
+    monkeypatch.setattr(
+        "packages.galaxy_agent.agent_tools.get_image_url_from_hips_id",
+        lambda ra, dec, hips_id, size: "https://example.org/hips2fits.jpg",
+    )
+
+    requested_urls: list[str] = []
+
+    def fake_get(url: str, timeout: int) -> MagicMock:
+        requested_urls.append(url)
+        return MagicMock(content=b"hips-image", raise_for_status=lambda: None)
+
+    monkeypatch.setattr("packages.galaxy_agent.agent_tools._http.get", fake_get)
+
+    def fail_if_canvas_decoded(raw: str) -> bytes:
+        raise AssertionError("canvas image_data should not be used when view_hips_id is present")
+
+    monkeypatch.setattr("packages.galaxy_agent.agent_tools.base64.b64decode", fail_if_canvas_decoded)
+
+    registry = ContextRegistry("req-hips")
+    store = _FakeArtifactStore()
+    request = AnalyzeRequest(
+        request_id="req-hips",
+        message="analyze",
+        task="morphology_summary",
+        view_ra_deg=10.68,
+        view_dec_deg=41.27,
+        view_hips_id="CDS/P/SDSS9/color",
+        image_data="data:image/jpeg;base64,stale-canvas",
+    )
+
+    tool = make_tool_resolve_and_fetch_image(registry, store, request)
+    result = tool.invoke({})
+
+    assert result["image_handle"] == "image:req-hips"
+    assert result["survey_used"] == "CDS/P/SDSS9/color"
+    assert requested_urls == ["https://example.org/hips2fits.jpg"]
+    assert registry.get("image:req-hips") is fake_image
 
 
 # ---------------------------------------------------------------------------
