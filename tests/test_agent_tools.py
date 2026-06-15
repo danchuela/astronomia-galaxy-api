@@ -20,6 +20,7 @@ from packages.galaxy_agent.agent_tools import (
     make_tool_enrich_metadata,
     make_tool_generate_final_report,
     make_tool_resolve_and_fetch_image,
+    make_tool_run_isophotes,
     make_tool_segment_image,
 )
 from packages.galaxy_agent.context_registry import ContextRegistry
@@ -408,6 +409,34 @@ def test_generate_final_report_calls_langchain_backend(monkeypatch: pytest.Monke
     assert registry.get("summary:req-report") == "Final LLM summary."
 
 
+def test_generate_final_report_uses_actual_viewer_survey_metadata() -> None:
+    """Final text reflects the survey used by the viewer instead of the default SDSS."""
+    fake_backend = MagicMock()
+    fake_backend.generate_accompanying_summary.return_value = "Final LLM summary."
+
+    registry = ContextRegistry("req-ir-report")
+    registry.put(
+        "coordinates:req-ir-report",
+        {
+            "ra_deg": 10.68,
+            "dec_deg": 41.27,
+            "survey_used": "CDS/P/2MASS/color",
+            "hips_id": "CDS/P/2MASS/color",
+            "size_arcmin": 6.5,
+        },
+    )
+    request = _make_request("req-ir-report")
+
+    tool = make_tool_generate_final_report(registry, fake_backend, request)
+    result = tool.invoke(
+        {"morphology_text": "Raw morphology text.", "object_info": "", "hst_jwst_info": ""}
+    )
+
+    assert "Catálogo usado: 2MASS. Campo: 6.5 arcmin." in result["summary"]
+    call_kwargs = fake_backend.generate_accompanying_summary.call_args.kwargs
+    assert call_kwargs["band"] == "infrarrojo"
+
+
 def test_generate_final_report_no_backend() -> None:
     """generate_final_report returns morphology_text as-is when no backend."""
     registry = ContextRegistry("req-nobackend")
@@ -417,3 +446,37 @@ def test_generate_final_report_no_backend() -> None:
     result = tool.invoke({"morphology_text": "Plain text.", "object_info": "", "hst_jwst_info": ""})
 
     assert "Plain text." in result["summary"]
+
+
+def test_run_isophotes_uses_actual_viewer_survey_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Isophote text uses the image survey captured in the registry."""
+    monkeypatch.setattr(
+        "packages.galaxy_agent.agent_tools.tool_isophotes",
+        lambda *args, **kwargs: ([], b"png", "Isofotas calculadas."),
+    )
+
+    registry = ContextRegistry("req-wise-iso")
+    registry.put(registry.image_handle(), _fake_ndarray())
+    fake_seg = MagicMock()
+    fake_seg.mask = np.ones((50, 50), dtype=np.uint8)
+    registry.put(registry.seg_handle(), fake_seg)
+    registry.put(registry.metrics_handle(), {"centroid_x": 25.0, "centroid_y": 25.0})
+    registry.put(
+        "coordinates:req-wise-iso",
+        {
+            "survey_used": "CDS/P/allWISE/color",
+            "hips_id": "CDS/P/allWISE/color",
+            "size_arcmin": 4.0,
+        },
+    )
+    request = _make_request("req-wise-iso")
+    store = _FakeArtifactStore()
+
+    tool = make_tool_run_isophotes(registry, BasicGalaxyAnalyzer(), store, request)
+    result = tool.invoke(
+        {"image_handle": registry.image_handle(), "seg_handle": registry.seg_handle()}
+    )
+
+    assert "Catálogo usado: WISE. Campo: 4.0 arcmin." in result["isophote_summary"]

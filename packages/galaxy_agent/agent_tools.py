@@ -52,6 +52,25 @@ logger = logging.getLogger(__name__)
 
 _IMAGE_DOWNLOAD_TIMEOUT = 30
 
+_HIPS_SURVEY_LABELS: dict[str, str] = {
+    "CDS/P/SDSS9/color": "SDSS",
+    "CDS/P/DSS2/color": "DSS2",
+    "CDS/P/DSS2/red": "DSS2-RED",
+    "CDS/P/DSS2/blue": "DSS2-BLUE",
+    "CDS/P/PanSTARRS/DR1/color-i-r-g": "PanSTARRS",
+    "CDS/P/DECaLS/DR5/color": "DECaLS",
+    "CDS/P/2MASS/color": "2MASS",
+    "CDS/P/2MASS/J": "2MASS-J",
+    "CDS/P/allWISE/color": "WISE",
+    "CDS/P/allWISE/W1": "WISE-W1",
+    "CDS/P/GALEXGR6_7/FUV": "GALEX-FUV",
+    "CDS/P/GALEXGR6_7/NUV": "GALEX-NUV",
+    "CDS/P/GALEXGR6_7/color": "GALEX",
+    "CDS/P/RASS": "RASS",
+    "xcatdb/P/XMM/PN/color": "XMM",
+    "CDS/P/NVSS": "NVSS",
+}
+
 
 # ---------------------------------------------------------------------------
 # Module-level helpers (stateless, no registry dependency)
@@ -69,6 +88,66 @@ def _build_fetch_attempts(opts: dict[str, Any]) -> list[tuple[str | None, str | 
     if band_str.lower() in ("visible", "optical"):
         return [("SDSS", None)]
     return [(None, band_str)]
+
+
+def _survey_display_label(survey: str | None) -> str | None:
+    if not survey:
+        return None
+    value = str(survey).strip()
+    if not value:
+        return None
+    return _HIPS_SURVEY_LABELS.get(value) or value
+
+
+def _band_from_survey(survey: str | None) -> str | None:
+    if not survey:
+        return None
+    low = str(survey).lower()
+    if any(token in low for token in ("2mass", "wise", "infrared")):
+        return "infrarrojo"
+    if any(token in low for token in ("galex", "ultraviolet")):
+        return "ultravioleta"
+    if any(token in low for token in ("rass", "xmm", "x-ray", "xray")):
+        return "rayos X"
+    if any(token in low for token in ("nvss", "radio")):
+        return "radio"
+    if any(token in low for token in ("sdss", "dss", "panstarrs", "decals")):
+        return "visible"
+    return None
+
+
+def _image_metadata_for_report(
+    registry: ContextRegistry,
+    opts: dict[str, Any],
+) -> tuple[str, str, float]:
+    coords: dict[str, Any] = {}
+    try:
+        raw = registry.get(_coordinates_key(registry.request_id))
+        coords = raw if isinstance(raw, dict) else {}
+    except KeyError:
+        pass
+
+    survey = str(coords.get("survey_used") or coords.get("hips_id") or "").strip()
+    catalog = _survey_display_label(survey)
+    if catalog is None:
+        band_opt = str(opts.get("band") or "visible")
+        catalog = str(opts.get("catalog") or BAND_TO_SURVEY.get(band_opt.lower(), "SDSS"))
+
+    band = _band_from_survey(survey or catalog)
+    if band is None:
+        band = str(opts.get("band") or "visible")
+
+    raw_size = (
+        coords.get("size_arcmin")
+        or opts.get("_resolved_size_arcmin")
+        or opts.get("size_arcmin")
+        or 10.0
+    )
+    try:
+        size_arcmin = float(raw_size)
+    except (TypeError, ValueError):
+        size_arcmin = 10.0
+    return catalog, band, size_arcmin
 
 
 def _resolve_target(request: AnalyzeRequest, opts: dict[str, Any]) -> ResolvedTarget:
@@ -536,9 +615,7 @@ def make_tool_run_isophotes(
         artifacts = _get_artifacts(registry)
         artifacts.append(artifact_store.save_plot(request.request_id, "isophotes", png_bytes))
 
-        band = str(opts.get("band") or "visible")
-        catalog_used = str(opts.get("catalog") or BAND_TO_SURVEY.get(band.lower(), "SDSS"))
-        size_arcmin = float(opts.get("_resolved_size_arcmin") or opts.get("size_arcmin") or 10.0)
+        catalog_used, _band, size_arcmin = _image_metadata_for_report(registry, opts)
         iso_text = append_catalog_and_field(iso_summary, catalog_used, size_arcmin)
 
         # Append to existing analysis text instead of overwriting it.
@@ -693,17 +770,18 @@ def make_tool_generate_final_report(
             except KeyError:
                 pass
 
+            catalog_used, band_used, size_arcmin = _image_metadata_for_report(registry, opts)
+
             summary = langchain_backend.generate_accompanying_summary(
                 target_name=(request.target and request.target.name) or "unknown",
-                band=str(opts.get("band") or "visible"),
+                band=band_used,
                 morphology_summary=morphology_text,
                 user_message=last_user_message(request) or None,
                 simbad_morph_type=simbad_record.get("morph_type") or None,
             )
 
-        band = str(opts.get("band") or "visible")
-        catalog_used = str(opts.get("catalog") or BAND_TO_SURVEY.get(band.lower(), "SDSS"))
-        size_arcmin = float(opts.get("_resolved_size_arcmin") or opts.get("size_arcmin") or 10.0)
+        if langchain_backend is None:
+            catalog_used, _band_used, size_arcmin = _image_metadata_for_report(registry, opts)
         summary = append_catalog_and_field(summary, catalog_used, size_arcmin)
 
         def _reg_text(key: str) -> str:
