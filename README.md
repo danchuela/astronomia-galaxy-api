@@ -96,9 +96,9 @@ Without API key in development: set `REQUIRE_API_KEY=false` in `.env`.
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `OPENAI_API_KEY` | OpenAI key (required for NL and agent) | — |
-| `AGENT_MODEL` | LangGraph analysis agent model | `gpt-4.1` |
-| `OPENAI_PARSE_MODEL` | NLU intent parser model | `gpt-4.1` |
-| `OPENAI_MODEL` | Narrative summary generation model | `gpt-4.1-mini` |
+| `AGENT_MODEL` | LangGraph analysis agent model | `gpt-6-luna` |
+| `OPENAI_PARSE_MODEL` | NLU intent parser model | `gpt-6-luna` |
+| `OPENAI_MODEL` | Narrative summary generation model | `gpt-6-luna` |
 | `REQUIRE_API_KEY` | Enable API key authentication | `true` |
 | `API_KEY` | API key value | — |
 | `ARTIFACT_DIR` | Artifact storage directory | `artifacts` |
@@ -110,3 +110,8 @@ Without API key in development: set `REQUIRE_API_KEY=false` in `.env`.
 | `LANGSMITH_TRACING` | Enable LangSmith tracing | `false` |
 
 See `.env.example` for the full list.
+
+GPT-6 Luna uses `reasoning_effort="none"` to retain Chat Completions tool calling
+and the existing request format. Existing model overrides remain supported.
+Set all three model variables when promoting a deployment whose environment
+still pins older models. The viewer gate and image-analysis tools are unchanged.
