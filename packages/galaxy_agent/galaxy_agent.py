@@ -1,6 +1,6 @@
 """LangGraph agent builder for galaxy analysis.
 
-The agent uses GPT-4.1 with native tool-calling via create_react_agent.
+The agent uses GPT-6 Luna with native tool-calling via create_agent.
 The system prompt is static (never modified per request) so OpenAI's
 automatic prefix caching activates after the first call (≥1024-token prefix).
 All request-specific context is injected as a HumanMessage.
@@ -114,11 +114,15 @@ def build_galaxy_agent(
 ) -> CompiledStateGraph[Any, Any, Any]:
     """Build and return a LangGraph ReAct agent with the given tools.
 
-    The agent uses GPT-4.1 with temperature=0 for deterministic tool-calling.
+    GPT-6 Luna uses reasoning_effort="none" for Chat Completions tool-calling.
     The static system prompt enables OpenAI automatic prefix caching.
     """
-    resolved_model = model_name or os.getenv("AGENT_MODEL", "gpt-4.1")
-    llm = ChatOpenAI(model=resolved_model, temperature=0)
+    resolved_model = model_name or os.getenv("AGENT_MODEL", "gpt-6-luna")
+    llm = ChatOpenAI(
+        model=resolved_model,
+        temperature=0,
+        reasoning_effort="none" if resolved_model.startswith("gpt-6-luna") else None,
+    )
     system_message = SystemMessage(content=_SYSTEM_PROMPT)
     agent: CompiledStateGraph[Any, Any, Any] = create_agent(
         llm, tools, system_prompt=system_message

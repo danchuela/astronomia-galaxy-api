@@ -6,7 +6,7 @@ import os
 import re
 from typing import Any
 
-from openai import OpenAI
+from openai import NOT_GIVEN, OpenAI
 
 from packages.galaxy_agent.domain.models import Target, TaskType
 from packages.galaxy_agent.models import AnalyzeRequest
@@ -79,8 +79,8 @@ def _format_metrics_spanish(morphology_summary: str) -> str:
 
 class LangChainBackend:
     def __init__(self) -> None:
-        self._parse_model = os.getenv("OPENAI_PARSE_MODEL", "gpt-4.1")
-        self._model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+        self._parse_model = os.getenv("OPENAI_PARSE_MODEL", "gpt-6-luna")
+        self._model = os.getenv("OPENAI_MODEL", "gpt-6-luna")
         self._client = OpenAI()
 
     def _build_system_prompt(self, viewer_context: str | None = None) -> str:
@@ -274,6 +274,7 @@ class LangChainBackend:
 
         response = self._client.chat.completions.create(
             model=self._parse_model,
+            reasoning_effort="none" if self._parse_model.startswith("gpt-6-luna") else NOT_GIVEN,
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -433,6 +434,7 @@ class LangChainBackend:
         try:
             resp = self._client.chat.completions.create(
                 model=self._model,
+                reasoning_effort="none" if self._model.startswith("gpt-6-luna") else NOT_GIVEN,
                 messages=[
                     {
                         "role": "system",
