@@ -1,5 +1,7 @@
 FROM python:3.11-slim
 
+COPY --from=ghcr.io/astral-sh/uv:0.13.1 /uv /usr/local/bin/uv
+
 WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -7,9 +9,10 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+ENV PATH="/app/.venv/bin:$PATH"
 
-COPY pyproject.toml /app/
-RUN pip install --no-cache-dir $(python -c "import tomllib; print(' '.join(tomllib.load(open('pyproject.toml','rb'))['project']['dependencies']))")
+COPY pyproject.toml uv.lock /app/
+RUN uv sync --locked --no-dev --no-install-project --no-cache
 
 COPY . /app
 
