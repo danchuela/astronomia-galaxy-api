@@ -34,9 +34,13 @@ def resolve(name: str) -> tuple[float, float]:
 
     match = SESAME_JPOS_RE.search(text)
     if not match:
-        if not text.strip() or "<html" in text.lower():
-            raise RuntimeError("SESAME returned an invalid response")
-        raise TargetNotFoundError(name)
+        # Inspect this target's block, not a diagnostic for another query/option.
+        for section in re.split(r"(?m)^# ", text):
+            lines = section.splitlines()
+            if lines and lines[0].split("\t", 1)[0].strip() == name:
+                if re.search(r"nothing\s+found", "\n".join(lines[1:]), re.IGNORECASE):
+                    raise TargetNotFoundError(name)
+        raise RuntimeError("SESAME returned no usable position or explicit not-found result")
 
     ra_deg = float(match.group(1))
     dec_deg = float(match.group(2))

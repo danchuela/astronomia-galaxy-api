@@ -70,11 +70,30 @@ def test_valid_messier_boundaries_are_resolved(monkeypatch, name):
     assert sesame_client.resolve(name) == (148.888, 69.065)
 
 
-@pytest.mark.parametrize("text", ["", "<html>Temporarily unavailable</html>"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "<html>Temporarily unavailable</html>",
+        "Unexpected upstream response",
+        "# -ox\t#Q123\n#! *** NNNothing found ***\n\n# M81\t#Q123\nResolver failure\n",
+    ],
+)
 def test_invalid_resolver_response_is_not_unknown_target(monkeypatch, text):
     _response(monkeypatch, text)
-    with pytest.raises(RuntimeError, match="invalid response"):
+    with pytest.raises(RuntimeError, match="no usable position"):
         sesame_client.resolve("M81")
+
+
+def test_real_sesame_not_found_payload(monkeypatch):
+    name = "astronomia-no-such-target-123456789"
+    _response(
+        monkeypatch,
+        "# -ox\t#Q123\n#! *** NNNothing found ***\n\n"
+        f"# {name}\t#Q123\n#! *** NNNothing found ***\n\n#****Total of 1 crashes\n",
+    )
+    with pytest.raises(TargetNotFoundError):
+        sesame_client.resolve(name)
 
 
 def test_http_failure_is_not_unknown_target(monkeypatch):
