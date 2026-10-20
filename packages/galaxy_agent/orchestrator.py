@@ -11,9 +11,11 @@ from packages.galaxy_agent.artifacts import ArtifactStore
 from packages.galaxy_agent.context_registry import ContextRegistry
 from packages.galaxy_agent.galaxy_agent import build_galaxy_agent
 from packages.galaxy_agent.langchain_backend import LangChainBackend
+from packages.galaxy_agent.messages import target_not_found_message
 from packages.galaxy_agent.models import AnalyzeRequest, AnalyzeResponse, Artifact, Provenance
 from packages.galaxy_agent.provenance_utils import build_provenance
 from packages.galaxy_core.analyzer import BasicGalaxyAnalyzer
+from packages.galaxy_core.domain.errors import TargetNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +106,22 @@ class TaskOrchestrator:
                             if status_msg:
                                 yield {"type": "status", "message": status_msg}
 
+        except TargetNotFoundError as exc:
+            registry.clear()
+            logger.info("target_not_found", extra={"request_id": rid, "target": exc.name})
+            summary = target_not_found_message(exc.name)
+            yield {"type": "summary", "summary": summary}
+            yield {
+                "type": "end",
+                "request_id": rid,
+                "status": "success",
+                "summary": summary,
+                "results": {"target_resolution": {"status": "not_found", "name": exc.name}},
+                "artifacts": [],
+                "provenance": build_provenance(langsmith_enabled).model_dump(),
+                "warnings": [],
+            }
+            return
         except Exception as exc:
             logger.error(
                 "agent_run_error",
