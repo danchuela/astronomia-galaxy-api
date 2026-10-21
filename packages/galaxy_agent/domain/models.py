@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 TaskType = Literal[
     "morphology_summary",
@@ -44,6 +44,15 @@ class AnalyzeRequest(BaseModel):
     view_size_arcmin: float | None = None
     view_hips_id: str | None = None
     image_data: str | None = None
+    # Answer language resolved by the BFF ("es" | "en"); None means Spanish.
+    answer_language: Literal["es", "en"] | None = None
+
+    @field_validator("answer_language", mode="before")
+    @classmethod
+    def normalize_answer_language(cls, value: Any) -> str | None:
+        if isinstance(value, str) and value.strip().lower() in ("es", "en"):
+            return value.strip().lower()
+        return None
 
     @model_validator(mode="after")
     def require_message_or_structured(self) -> AnalyzeRequest:
@@ -80,6 +89,7 @@ class AnalyzeRequest(BaseModel):
             view_size_arcmin=self.view_size_arcmin,
             view_hips_id=self.view_hips_id,
             image_data=self.image_data,
+            answer_language=self.answer_language,
         )
 
 

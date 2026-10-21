@@ -59,6 +59,7 @@ def tool_isophotes(
     target_name: str = "unknown",
     hips_id: str | None = None,
     n_iso: int = 8,
+    lang: str = "es",
 ) -> tuple[list[dict[str, float]], bytes, str]:
     """Fit isophotes with photutils. Returns (table, png_bytes, summary)."""
     from packages.galaxy_core.application.isophotes import (
@@ -76,5 +77,5 @@ def tool_isophotes(
     iso_table, png_bytes = compute_isophotes(
         data, segmentation.mask, measurements, n_iso=n_iso, hips_id=hips_id
     )
-    summary = format_isophotes_summary(iso_table, target_name, hips_id=hips_id)
+    summary = format_isophotes_summary(iso_table, target_name, hips_id=hips_id, lang=lang)
     return iso_table, png_bytes, summary

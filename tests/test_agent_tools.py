@@ -341,13 +341,15 @@ def test_enrich_metadata_returns_simbad_and_hst(monkeypatch: pytest.MonkeyPatch)
         "packages.galaxy_agent.agent_tools.simbad_query_object", lambda name: fake_simbad
     )
     monkeypatch.setattr(
-        "packages.galaxy_agent.agent_tools.format_object_info", lambda r: "SIMBAD info text"
+        "packages.galaxy_agent.agent_tools.format_object_info",
+        lambda r, lang="es": "SIMBAD info text",
     )
     monkeypatch.setattr(
         "packages.galaxy_agent.agent_tools.search_hst_jwst", lambda ra, dec: {"count": 5}
     )
     monkeypatch.setattr(
-        "packages.galaxy_agent.agent_tools.format_hst_jwst_info", lambda r: "HST info text"
+        "packages.galaxy_agent.agent_tools.format_hst_jwst_info",
+        lambda r, lang="es": "HST info text",
     )
 
     registry = ContextRegistry("req-enrich")
@@ -393,7 +395,7 @@ def test_generate_final_report_calls_langchain_backend(monkeypatch: pytest.Monke
 
     monkeypatch.setattr(
         "packages.galaxy_agent.agent_tools.append_catalog_and_field",
-        lambda summary, catalog, size_arcmin: summary,
+        lambda summary, catalog, size_arcmin, lang="es": summary,
     )
 
     registry = ContextRegistry("req-report")

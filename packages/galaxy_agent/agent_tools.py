@@ -18,6 +18,14 @@ from langchain_core.tools import BaseTool, tool
 
 from packages.galaxy_agent.artifacts import ArtifactWriter
 from packages.galaxy_agent.context_registry import ContextRegistry
+from packages.galaxy_agent.messages import (
+    image_loaded_message,
+    isophotes_unavailable_message,
+    lang_of,
+    segmentation_done_message,
+    the_object,
+    viewer_ready_message,
+)
 from packages.galaxy_agent.models import AnalyzeRequest, Artifact
 from packages.galaxy_agent.request_utils import append_catalog_and_field, last_user_message
 from packages.galaxy_agent.tools import (
@@ -599,11 +607,17 @@ def make_tool_run_isophotes(
 
         try:
             _iso_table, png_bytes, iso_summary = tool_isophotes(
-                image, segmentation, measurements, target_name, hips_id=hips_id, n_iso=n_iso
+                image,
+                segmentation,
+                measurements,
+                target_name,
+                hips_id=hips_id,
+                n_iso=n_iso,
+                lang=lang_of(request),
             )
         except Exception as exc:
             logger.warning("run_isophotes_failed: %s", exc, exc_info=True)
-            iso_text = "Isofotas no disponibles para esta imagen."
+            iso_text = isophotes_unavailable_message(lang_of(request))
             rid = registry.request_id
             try:
                 existing_text = str(registry.get(_morphology_key(rid)))
@@ -619,7 +633,9 @@ def make_tool_run_isophotes(
         artifacts.append(artifact_store.save_plot(request.request_id, "isophotes", png_bytes))
 
         catalog_used, _band, size_arcmin = _image_metadata_for_report(registry, opts)
-        iso_text = append_catalog_and_field(iso_summary, catalog_used, size_arcmin)
+        iso_text = append_catalog_and_field(
+            iso_summary, catalog_used, size_arcmin, lang_of(request)
+        )
 
         # Append to existing analysis text instead of overwriting it.
         # For morphology_summary/measure_basic, analyze_galaxy already saved text here.
@@ -663,7 +679,7 @@ def make_tool_enrich_metadata(
                 simbad_record = simbad_query_object(target_name)
                 if simbad_record:
                     object_info = simbad_record
-                    object_info_text = format_object_info(simbad_record)
+                    object_info_text = format_object_info(simbad_record, lang_of(request))
             except Exception:
                 logger.warning("simbad_enrich_failed", exc_info=True)
 
@@ -675,7 +691,7 @@ def make_tool_enrich_metadata(
                 hst_record = search_hst_jwst(float(ra), float(dec))
                 if hst_record:
                     hst_jwst = hst_record
-                    hst_jwst_text = format_hst_jwst_info(hst_record)
+                    hst_jwst_text = format_hst_jwst_info(hst_record, lang_of(request))
         except Exception:
             logger.warning("mast_hst_enrich_failed", exc_info=True)
 
@@ -708,7 +724,7 @@ def make_tool_generate_final_report(
         """Generate the final narrative summary for the user.
 
         Combines morphological analysis text, SIMBAD metadata, and HST/JWST
-        observations into a coherent scientific summary in Spanish.
+        observations into a coherent scientific summary in the answer language.
         If no langchain_backend is available, returns morphology_text as-is.
 
         Pass the morphology_text from analyze_galaxy (or isophote_summary from
@@ -716,6 +732,7 @@ def make_tool_generate_final_report(
         if those tools were called. This tool MUST always be called last.
         """
         opts = request.options or {}
+        lang = lang_of(request)
 
         # Resolve task: SESAME-only — return viewer guidance so the user can explore first.
         if request.task == "resolve":
@@ -725,17 +742,11 @@ def make_tool_generate_final_report(
                 ra = coords.get("ra_deg")
                 dec = coords.get("dec_deg")
                 label = target_name or (
-                    f"RA {ra:.4f}° Dec {dec:.4f}°" if ra and dec else "el objeto"
+                    f"RA {ra:.4f}° Dec {dec:.4f}°" if ra and dec else the_object(lang)
                 )
             except KeyError:
-                label = target_name or "el objeto"
-            summary = (
-                f"Aquí tienes {label}. "
-                f"Ajusta el encuadre, el zoom y la banda en el visor como prefieras. "
-                f"Cuando estés listo, dime qué quieres analizar: "
-                f"morfología completa, segmentación e isofotas, "
-                f"fotometría básica, o perfil de brillo."
-            )
+                label = target_name or the_object(lang)
+            summary = viewer_ready_message(label, lang)
             registry.put(_summary_key(registry.request_id), summary)
             return {"summary": summary}
 
@@ -752,14 +763,11 @@ def make_tool_generate_final_report(
         # without returning the resolve viewer-guidance message.
         if not morphology_text:
             task = request.task or "segment"
-            target_label = (request.target and request.target.name) or "el objeto"
+            target_label = (request.target and request.target.name) or the_object(lang)
             if task == "segment":
-                summary = (
-                    f"Segmentación de {target_label} completada. "
-                    f"La máscara de la fuente detectada está guardada en los artefactos."
-                )
+                summary = segmentation_done_message(target_label, lang)
             else:
-                summary = f"Imagen de {target_label} cargada correctamente."
+                summary = image_loaded_message(target_label, lang)
             registry.put(_summary_key(registry.request_id), summary)
             return {"summary": summary}
 
@@ -781,11 +789,12 @@ def make_tool_generate_final_report(
                 morphology_summary=morphology_text,
                 user_message=last_user_message(request) or None,
                 simbad_morph_type=simbad_record.get("morph_type") or None,
+                lang=lang,
             )
 
         if langchain_backend is None:
             catalog_used, _band_used, size_arcmin = _image_metadata_for_report(registry, opts)
-        summary = append_catalog_and_field(summary, catalog_used, size_arcmin)
+        summary = append_catalog_and_field(summary, catalog_used, size_arcmin, lang)
 
         def _reg_text(key: str) -> str:
             try:
