@@ -61,24 +61,25 @@ def query_object(name: str) -> dict[str, Any] | None:
     return record if record.get("main_id") else None
 
 
-def format_object_info(record: dict[str, Any]) -> str:
-    """Format SIMBAD record into a short Spanish description for the LLM summary."""
+def format_object_info(record: dict[str, Any], lang: str = "es") -> str:
+    """Format SIMBAD record into a short description (Spanish or English) for the summary."""
+    en = lang == "en"
     parts: list[str] = []
 
     main_id = record.get("main_id", "")
     otype_long = record.get("otype_txt") or record.get("otype") or ""
     if otype_long:
-        parts.append(f"{main_id} — tipo: {otype_long}")
+        parts.append(f"{main_id} — {'type' if en else 'tipo'}: {otype_long}")
     else:
         parts.append(str(main_id))
 
     morph = record.get("morph_type")
     if morph:
-        parts.append(f"morfología: {morph}")
+        parts.append(f"{'morphology' if en else 'morfología'}: {morph}")
 
     rv = record.get("rvz_radvel")
     if rv is not None:
-        parts.append(f"v_radial: {rv:.0f} km/s")
+        parts.append(f"{'radial velocity' if en else 'v_radial'}: {rv:.0f} km/s")
 
     z = record.get("rvz_redshift")
     if z is not None:
@@ -86,7 +87,7 @@ def format_object_info(record: dict[str, Any]) -> str:
 
     sp = record.get("sp_type")
     if sp:
-        parts.append(f"tipo espectral: {sp}")
+        parts.append(f"{'spectral type' if en else 'tipo espectral'}: {sp}")
 
     return ". ".join(parts) + "." if parts else ""
 

@@ -13,11 +13,18 @@ logger = logging.getLogger(__name__)
 _NON_OPTICAL_KEYWORDS = ("galex", "nvss", "rass", "xmm", "radio", "fuv", "nuv")
 
 
-def _survey_warning(hips_id: str | None) -> str | None:
+def _survey_warning(hips_id: str | None, lang: str = "es") -> str | None:
     if not hips_id:
         return None
     low = hips_id.lower()
     if any(k in low for k in _NON_OPTICAL_KEYWORDS):
+        if lang == "en":
+            return (
+                "Note: elliptical isophotes assume a smooth, symmetric brightness profile. "
+                "UV (GALEX) and radio surveys show irregular emission (HII regions, "
+                "star-forming rings) that makes convergence difficult. "
+                "For better results use an optical survey: SDSS, DSS2 or PanSTARRS."
+            )
         return (
             "Nota: las isofotas elípticas asumen un perfil de brillo suave y simétrico. "
             "Los surveys UV (GALEX) y de radio muestran emisión irregular (regiones HII, "
@@ -229,8 +236,16 @@ def format_isophotes_summary(
     iso_table: list[dict[str, float]],
     target_name: str,
     hips_id: str | None = None,
+    lang: str = "es",
 ) -> str:
-    warn = _survey_warning(hips_id)
+    warn = _survey_warning(hips_id, lang)
+    if not iso_table and lang == "en":
+        base = (
+            f"Isointensity contours traced for {target_name}. "
+            "The elliptical fit did not converge; the image shows the real brightness "
+            "contours of the galaxy."
+        )
+        return f"{base}\n\n{warn}" if warn else base
     if not iso_table:
         base = (
             f"Contornos de isointensidad trazados para {target_name}. "
@@ -241,6 +256,15 @@ def format_isophotes_summary(
 
     innermost = iso_table[0]
     outermost = iso_table[-1]
+    if lang == "en":
+        base = (
+            f"Isophotes for {target_name}: {len(iso_table)} fitted ellipses "
+            f"(sma={innermost['sma']:.1f}–{outermost['sma']:.1f} px, "
+            f"mean ellipticity {sum(r['ellip'] for r in iso_table) / len(iso_table):.3f}). "
+            "The image shows real isointensity contours that trace the shape "
+            "of the galaxy, including spiral arms and irregular structure."
+        )
+        return f"{base}\n\n{warn}" if warn else base
     base = (
         f"Isofotas para {target_name}: {len(iso_table)} elipses ajustadas "
         f"(sma={innermost['sma']:.1f}–{outermost['sma']:.1f} px, "

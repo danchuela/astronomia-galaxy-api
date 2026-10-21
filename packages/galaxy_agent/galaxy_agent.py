@@ -62,7 +62,7 @@ Step 5 — enrich_metadata  [CONDITIONAL]
   Returns: object_info (SIMBAD), hst_jwst (MAST HST/Webb observations)
 
 Step 6 — generate_final_report  [ALWAYS LAST]
-  Generates the narrative summary for the user in Spanish.
+  Generates the narrative summary for the user (in the answer language of the request).
   Input: morphology_text (from Step 3) or isophote_summary (from Step 4),
          object_info and hst_jwst from Step 5 (pass empty strings if Step 5 was skipped)
   Returns: summary

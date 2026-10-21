@@ -9,6 +9,7 @@ from typing import Any
 from openai import NOT_GIVEN, OpenAI
 
 from packages.galaxy_agent.domain.models import Target, TaskType
+from packages.galaxy_agent.messages import lang_of
 from packages.galaxy_agent.models import AnalyzeRequest
 from packages.galaxy_agent.request_utils import last_user_message
 from packages.galaxy_core.domain.imaging import (
@@ -83,8 +84,16 @@ class LangChainBackend:
         self._model = os.getenv("OPENAI_MODEL", "gpt-6-luna")
         self._client = OpenAI()
 
-    def _build_system_prompt(self, viewer_context: str | None = None) -> str:
+    def _build_system_prompt(self, viewer_context: str | None = None, lang: str = "es") -> str:
         capabilities = get_capabilities_description()
+        language = "inglés" if lang == "en" else "español"
+        viewer_buttons = (
+            "Use the interactive viewer buttons (above this chat) to change the survey or the zoom."
+            if lang == "en"
+            else "Usa los botones del visor "
+            "interactivo (encima de este chat) para cambiar "
+            "el survey o el zoom."
+        )
         return (
             "Eres el parser de un sistema de astronomía "
             "interactivo. El sistema muestra objetos "
@@ -133,13 +142,11 @@ class LangChainBackend:
             "  2. Acciones del visor interactivo (frontend): "
             "'cambia el survey a X', 'cambia a DSS', 'pon "
             "zoom +5', 'ajusta el zoom', 'acerca más'. "
-            "decline_reason = 'Usa los botones del visor "
-            "interactivo (encima de este chat) para cambiar "
-            "el survey o el zoom.'\n"
+            f"decline_reason = '{viewer_buttons}'\n"
             "  3. Peticiones claramente fuera de alcance: "
             "'dame el espectro', 'cuántas estrellas', "
             "'qué es un quásar'. decline_reason breve en "
-            "español.\n"
+            f"{language}.\n"
             "- can_fulfill = FALSE si pregunta por "
             "las capacidades del sistema. Responde con:\n"
             "[CAPABILITIES]\n"
@@ -147,7 +154,7 @@ class LangChainBackend:
             "Reformula de forma natural, no copies "
             "literalmente.\n\n"
             "Cuando can_fulfill es false: decline_reason "
-            "en español, breve y natural.\n"
+            f"en {language}, breve y natural.\n"
             "Cuando can_fulfill es true: "
             "decline_reason = null.\n\n"
             "DETERMINACIÓN DEL TASK — elige la tarea MÁS ESPECÍFICA que pide el usuario:\n"
@@ -258,7 +265,7 @@ class LangChainBackend:
                 f"survey {request.view_hips_id}, campo {request.view_size_arcmin:.1f}'"
             )
 
-        system_prompt = self._build_system_prompt(viewer_context=viewer_ctx)
+        system_prompt = self._build_system_prompt(viewer_context=viewer_ctx, lang=lang_of(request))
 
         # Separate current message from history so the LLM cannot mistake
         # a name in the history (e.g. "M87") for the object in the current message.
@@ -316,6 +323,7 @@ class LangChainBackend:
                 options=request.options or {},
                 out_of_scope=True,
                 decline_message=decline_reason,
+                answer_language=request.answer_language,
             )
 
         name = data.get("name")
@@ -396,6 +404,7 @@ class LangChainBackend:
             view_size_arcmin=request.view_size_arcmin,
             view_hips_id=request.view_hips_id,
             image_data=request.image_data,
+            answer_language=request.answer_language,
         )
 
     def generate_accompanying_summary(
@@ -405,8 +414,13 @@ class LangChainBackend:
         morphology_summary: str,
         user_message: str | None = None,
         simbad_morph_type: str | None = None,
+        lang: str = "es",
     ) -> str:
         """Build analysis summary: LLM writes qualitative intro, metrics appended verbatim."""
+        if lang == "en":
+            return self._english_summary(
+                target_name, band, morphology_summary, user_message, simbad_morph_type
+            )
         metrics_block = _format_metrics_spanish(morphology_summary)
 
         api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
@@ -451,6 +465,63 @@ class LangChainBackend:
                 return metrics_block
             if band and "banda" not in intro.lower():
                 intro = f"Análisis de {target_name} en banda {band}. {intro}"
+            return f"{intro}\n\n{metrics_block}"
+        except Exception:
+            logger.warning("LLM summary generation failed", exc_info=True)
+            return metrics_block
+
+    def _english_summary(
+        self,
+        target_name: str,
+        band: str | None,
+        morphology_summary: str,
+        user_message: str | None,
+        simbad_morph_type: str | None,
+    ) -> str:
+        """English version of generate_accompanying_summary (metrics stay as computed)."""
+        metrics_block = morphology_summary
+        api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+        if not api_key:
+            return metrics_block
+
+        band_info = f" in the {band} band" if band else ""
+        user_text = (user_message or "").strip() or f"analysis of {target_name}{band_info}"
+        morph_line = (
+            f"Morphological type from the literature (SIMBAD): {simbad_morph_type}\n\n"
+            if simbad_morph_type
+            else ""
+        )
+        prompt = (
+            f"The user said: \xab{user_text}\xbb.\n\n"
+            f"{morph_line}"
+            "Result of the morphological analysis:\n"
+            f"{morphology_summary}\n\n"
+            "Write ONE OR TWO introductory sentences in English that summarise "
+            "the morphological results and the reliability of the analysis. "
+            "If the SIMBAD morphological type is given, mention it as a reference. "
+            "Do NOT include any numerical value, CAS or Sérsic parameter, "
+            "or any figure. Only a brief qualitative introduction."
+        )
+        try:
+            resp = self._client.chat.completions.create(
+                model=self._model,
+                reasoning_effort="none" if self._model.startswith("gpt-6-luna") else NOT_GIVEN,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Reply only with the introductory sentence. Nothing else.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                timeout=30,
+            )
+            if not resp.choices:
+                return metrics_block
+            intro = (resp.choices[0].message.content or "").strip()
+            if not intro:
+                return metrics_block
+            if band and "band" not in intro.lower():
+                intro = f"Analysis of {target_name} in the {band} band. {intro}"
             return f"{intro}\n\n{metrics_block}"
         except Exception:
             logger.warning("LLM summary generation failed", exc_info=True)
