@@ -110,8 +110,8 @@ def _search_collection(
     return best
 
 
-def format_hst_jwst_info(record: dict[str, Any]) -> str:
-    """Format MAST HST/JWST result into a short Spanish note."""
+def format_hst_jwst_info(record: dict[str, Any], lang: str = "es") -> str:
+    """Format MAST HST/JWST result into a short note (Spanish or English)."""
     coll = record.get("collection", "")
     instrument = record.get("instrument", "")
     filters = record.get("filters", "")
@@ -122,4 +122,6 @@ def format_hst_jwst_info(record: dict[str, Any]) -> str:
     if filters:
         label += f" ({filters})"
 
+    if lang == "en":
+        return f"Observation available in {label}."
     return f"Observación disponible en {label}."

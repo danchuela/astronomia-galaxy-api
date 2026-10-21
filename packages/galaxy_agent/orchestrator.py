@@ -11,7 +11,15 @@ from packages.galaxy_agent.artifacts import ArtifactStore
 from packages.galaxy_agent.context_registry import ContextRegistry
 from packages.galaxy_agent.galaxy_agent import build_galaxy_agent
 from packages.galaxy_agent.langchain_backend import LangChainBackend
-from packages.galaxy_agent.messages import target_not_found_message
+from packages.galaxy_agent.messages import (
+    TOOL_STATUS,
+    analysis_done_message,
+    lang_of,
+    no_summary_message,
+    target_not_found_message,
+    the_object,
+    viewer_ready_message,
+)
 from packages.galaxy_agent.models import AnalyzeRequest, AnalyzeResponse, Artifact, Provenance
 from packages.galaxy_agent.provenance_utils import build_provenance
 from packages.galaxy_core.analyzer import BasicGalaxyAnalyzer
@@ -59,15 +67,8 @@ class TaskOrchestrator:
         warnings: list[str] = []
         registry = ContextRegistry(request.request_id)
         rid = request.request_id
-
-        _TOOL_STATUS: dict[str, str] = {
-            "resolve_and_fetch_image": "Resolviendo objetivo…",
-            "segment_image": "Segmentando imagen…",
-            "analyze_galaxy": "Calculando análisis morfológico…",
-            "run_isophotes": "Ajustando isofotas elípticas…",
-            "enrich_metadata": "Consultando catálogos externos…",
-            "generate_final_report": "Generando resumen…",
-        }
+        lang = lang_of(request)
+        _TOOL_STATUS = TOOL_STATUS[lang]
 
         try:
             tools = build_agent_tools(
@@ -109,7 +110,7 @@ class TaskOrchestrator:
         except TargetNotFoundError as exc:
             registry.clear()
             logger.info("target_not_found", extra={"request_id": rid, "target": exc.name})
-            summary = target_not_found_message(exc.name)
+            summary = target_not_found_message(exc.name, lang)
             yield {"type": "summary", "summary": summary}
             yield {
                 "type": "end",
@@ -152,30 +153,23 @@ class TaskOrchestrator:
                 "agent_empty_summary",
                 extra={"request_id": rid, "task": request.task},
             )
-            target_label = (request.target and request.target.name) or "el objeto"
+            target_label = (request.target and request.target.name) or the_object(lang)
             if results:
-                summary = (
-                    f"Análisis de {target_label} completado. "
-                    f"Consulta los artefactos para ver los resultados."
-                )
+                summary = analysis_done_message(target_label, lang)
             elif coordinates:
                 ra = coordinates.get("ra_deg")
                 dec = coordinates.get("dec_deg")
                 label: str = (
                     target_label
                     if request.target
-                    else (f"RA {ra:.4f}° Dec {dec:.4f}°" if ra and dec else "el objeto")
+                    else (f"RA {ra:.4f}° Dec {dec:.4f}°" if ra and dec else the_object(lang))
                 )
-                summary = (
-                    f"Aquí tienes {label}. "
-                    f"Ajusta el encuadre, el zoom y la banda en el visor como prefieras. "
-                    f"Cuando estés listo, dime qué quieres analizar."
-                )
+                summary = viewer_ready_message(label, lang, list_analyses=False)
             else:
                 registry.clear()
                 yield {
                     "type": "error",
-                    "message": "El agente completó la ejecución sin generar un resumen.",
+                    "message": no_summary_message(lang),
                 }
                 return
 

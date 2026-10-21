@@ -8,9 +8,10 @@ from packages.galaxy_agent.artifacts import ArtifactStore
 from packages.galaxy_agent.domain.models import TaskType
 from packages.galaxy_agent.langchain_backend import LangChainBackend
 from packages.galaxy_agent.messages import (
-    ERROR_ANALYSIS_FAILED_MESSAGE,
-    ERROR_IMAGE_FETCH_FAILED_MESSAGE,
-    TARGET_REQUIRED_MESSAGE,
+    analysis_failed_message,
+    image_fetch_failed_message,
+    lang_of,
+    target_required_message,
 )
 from packages.galaxy_agent.models import (
     AnalyzeRequest,
@@ -66,7 +67,7 @@ class AgentRunner:
             if self._needs_target_prompt(resolved):
                 return self._build_success_response(
                     request_id=request.request_id,
-                    summary=TARGET_REQUIRED_MESSAGE,
+                    summary=target_required_message(lang_of(request)),
                 )
             if self._must_open_viewer_before_analysis(resolved):
                 resolved = self._as_viewer_setup_request(resolved)
@@ -79,7 +80,7 @@ class AgentRunner:
             )
             return self._build_error_response(
                 request_id=request.request_id,
-                summary=ERROR_ANALYSIS_FAILED_MESSAGE,
+                summary=analysis_failed_message(lang_of(request)),
             )
 
     def _resolve_request(self, request: AnalyzeRequest) -> AnalyzeRequest:
@@ -168,11 +169,12 @@ class AgentRunner:
                 return
             resolved = self._resolve_request(enriched)
             if self._needs_target_prompt(resolved):
-                yield {"type": "summary", "summary": TARGET_REQUIRED_MESSAGE}
+                prompt = target_required_message(lang_of(request))
+                yield {"type": "summary", "summary": prompt}
                 yield self._build_stream_end_event(
                     request_id=request.request_id,
                     status="success",
-                    summary=TARGET_REQUIRED_MESSAGE,
+                    summary=prompt,
                 )
                 return
             if self._must_open_viewer_before_analysis(resolved):
@@ -186,13 +188,13 @@ class AgentRunner:
                 "analysis_failed",
                 extra={"request_id": request.request_id, "event": "error"},
             )
-            message = ERROR_ANALYSIS_FAILED_MESSAGE
+            message = analysis_failed_message(lang_of(request))
             err_str = str(e)
             if (
                 "Failed to resolve and fetch image" in err_str
                 or "Image download failed for survey" in err_str
             ):
-                message = ERROR_IMAGE_FETCH_FAILED_MESSAGE
+                message = image_fetch_failed_message(lang_of(request))
             yield {"type": "summary", "summary": message}
             yield self._build_stream_end_event(
                 request_id=request.request_id,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from packages.galaxy_agent.messages import catalog_and_field
 from packages.galaxy_agent.models import AnalyzeRequest
 
 
@@ -12,6 +13,8 @@ def last_user_message(request: AnalyzeRequest) -> str:
     return request.message or ""
 
 
-def append_catalog_and_field(summary: str, catalog: str, size_arcmin: float) -> str:
+def append_catalog_and_field(
+    summary: str, catalog: str, size_arcmin: float, lang: str = "es"
+) -> str:
     base = summary.rstrip().rstrip(".")
-    return f"{base}. Catálogo usado: {catalog}. Campo: {size_arcmin:.1f} arcmin."
+    return f"{base}. {catalog_and_field(catalog, size_arcmin, lang)}"
