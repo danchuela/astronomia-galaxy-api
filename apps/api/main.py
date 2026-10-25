@@ -25,6 +25,7 @@ from packages.galaxy_agent.image_inspection import inspect_image
 from packages.galaxy_agent.logging_utils import setup_logging
 from packages.galaxy_agent.models import AnalyzeRequest, AnalyzeResponse
 from packages.galaxy_agent.uploads import UploadedImage, UploadedImageError
+from packages.galaxy_core.domain.errors import ImageCapacityError
 
 
 @asynccontextmanager
@@ -67,6 +68,8 @@ def inspect_uploaded_image(upload: UploadedImage) -> dict[str, Any]:
         return inspect_image(upload)
     except UploadedImageError as exc:
         raise HTTPException(status_code=422, detail={"code": exc.code}) from exc
+    except ImageCapacityError as exc:
+        raise HTTPException(status_code=422, detail={"code": "resource_limit"}) from exc
 
 
 @app.post("/analyze", response_model=AnalyzeResponse, dependencies=[Depends(verify_api_key)])

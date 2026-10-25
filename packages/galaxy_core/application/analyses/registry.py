@@ -9,6 +9,7 @@ from packages.galaxy_core.domain.analysis import (
     AnalysisResult,
     GalaxyAnalysisModule,
 )
+from packages.galaxy_core.domain.errors import ImageCapacityError
 from packages.galaxy_core.domain.models import SegmentationResult
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,16 @@ class AnalysisRegistry:
                 raise ValueError(f"Unknown analysis module: {name}")
             try:
                 results.append(module.run(ctx))
+            except ImageCapacityError:
+                results.append(
+                    AnalysisResult(
+                        module_name=name,
+                        metrics={},
+                        summary="",
+                        status="unavailable",
+                        warnings=["resource_limit"],
+                    )
+                )
             except Exception:
                 logger.exception("analysis_module_failed", extra={"module": name})
                 results.append(

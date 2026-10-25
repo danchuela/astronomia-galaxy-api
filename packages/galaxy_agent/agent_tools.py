@@ -24,6 +24,7 @@ from packages.galaxy_agent.context_registry import ContextRegistry
 from packages.galaxy_agent.image_inspection import segmentation_inputs
 from packages.galaxy_agent.langchain_backend import format_metrics_spanish
 from packages.galaxy_agent.messages import (
+    image_capacity_message,
     image_loaded_message,
     isophotes_unavailable_message,
     lang_of,
@@ -44,11 +45,12 @@ from packages.galaxy_agent.view_integrity import validate_view_capture
 from packages.galaxy_core.analyzer import BasicGalaxyAnalyzer
 from packages.galaxy_core.application.morphology import (
     basic_measurements_to_text,
+    check_morphology_budget,
     compute_basic_measurements,
 )
 from packages.galaxy_core.application.resolve_and_fetch_service import resolve_and_fetch
 from packages.galaxy_core.domain import ResolvedTarget, SegmentationResult
-from packages.galaxy_core.domain.errors import TargetNotFoundError
+from packages.galaxy_core.domain.errors import ImageCapacityError, TargetNotFoundError
 from packages.galaxy_core.domain.imaging import BAND_TO_SURVEY
 from packages.galaxy_core.infrastructure.dss2_client import (
     fetch_cutout_jpeg as fetch_dss2_cutout_jpeg,
@@ -716,6 +718,9 @@ def make_tool_run_isophotes(
         results["measurements"] = measurements
 
         try:
+            labels = segmentation.tight_segmap_labels
+            if labels is not None:
+                check_morphology_budget(labels, segmentation.main_label)
             _iso_table, png_bytes, iso_summary = tool_isophotes(
                 image,
                 segmentation,
@@ -726,12 +731,18 @@ def make_tool_run_isophotes(
                 lang=lang_of(request),
             )
         except Exception as exc:
-            logger.warning("run_isophotes_failed: %s", exc, exc_info=True)
+            limited = isinstance(exc, ImageCapacityError)
+            if not limited:
+                logger.warning("run_isophotes_failed: %s", exc, exc_info=True)
             results.setdefault("modules", {})["isophotes"] = {
                 "status": "unavailable",
-                "warnings": ["isophote_fit_failed"],
+                "warnings": ["resource_limit" if limited else "isophote_fit_failed"],
             }
-            iso_text = isophotes_unavailable_message(lang_of(request))
+            iso_text = (
+                image_capacity_message(lang_of(request))
+                if limited
+                else isophotes_unavailable_message(lang_of(request))
+            )
             rid = registry.request_id
             try:
                 existing_text = str(registry.get(_morphology_key(rid)))

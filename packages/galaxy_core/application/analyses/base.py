@@ -5,6 +5,7 @@ from typing import Any
 
 from packages.galaxy_core.application.morphology import compute_statmorph_metrics
 from packages.galaxy_core.domain.analysis import AnalysisContext
+from packages.galaxy_core.domain.errors import ImageCapacityError
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,8 @@ def get_statmorph(ctx: AnalysisContext) -> dict[str, Any]:
                 excluded_mask=seg.excluded_mask,
                 psf=seg.psf,
             )
+        except ImageCapacityError:
+            raise
         except Exception as exc:
             logger.warning("statmorph_failed_in_module", extra={"error": str(exc)}, exc_info=True)
             result = {}

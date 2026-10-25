@@ -52,6 +52,13 @@ downloads remain available. The BFF reports that another analysis is running, no
 that the module is broken. Production runs one Uvicorn worker. Increase workers
 only after measuring memory per process. This bounds admission, not execution time.
 
+Detection uses a bounded SEP active-pixel buffer (up to 1,048,576 pixels).
+CAS/Sersic/isophote workloads whose standard 2.5x source stamp would exceed
+589,824 pixels are explicitly unavailable. Segmentation and radial measurements
+can still be returned. No pixels are downsampled to fit this budget; use a native
+cutout with sufficient surrounding sky. The 4 MP file limit is not a promise
+that every extended source can be fitted in this small VPS.
+
 ## Validation
 
 `python scripts/validate_science.py --output <folder> --galfit-example <archive>`

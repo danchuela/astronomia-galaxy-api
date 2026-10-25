@@ -19,7 +19,7 @@ from packages.galaxy_agent.uploads import UploadedImage, UploadedImageError, pre
 from packages.galaxy_core.analyzer import BasicGalaxyAnalyzer
 from packages.galaxy_core.application.morphology import compute_basic_measurements
 from packages.galaxy_core.application.uncertainty import estimate_noise_stability
-from packages.galaxy_core.domain.errors import NoSourceDetectedError
+from packages.galaxy_core.domain.errors import ImageCapacityError, NoSourceDetectedError
 
 
 def field():
@@ -195,3 +195,30 @@ def test_capacity_rejects_excess_load_but_keeps_health_and_releases_slot():
             assert (await client.post("/images/inspect")).status_code == 200
 
     asyncio.run(check())
+
+
+def test_sep_pixel_budget_is_bounded_restored_and_not_reported_as_a_service_error(monkeypatch):
+    import sep
+
+    from packages.galaxy_core.application.morphology import compute_sep_segmap
+
+    prior = sep.get_extract_pixstack()
+
+    def full(*args, **kwargs):
+        assert sep.get_extract_pixstack() == 1024 * 1024
+        raise Exception("internal pixel buffer full")
+
+    monkeypatch.setattr(sep, "extract", full)
+    with pytest.raises(ImageCapacityError):
+        compute_sep_segmap(np.ones((1025, 1025)), 1)
+    assert sep.get_extract_pixstack() == prior
+
+
+def test_large_morphology_stamp_is_rejected_before_statmorph_allocates(monkeypatch):
+    from packages.galaxy_core.application.morphology import compute_statmorph_metrics
+
+    monkeypatch.setattr(
+        "statmorph.SourceMorphology", lambda *a, **kw: pytest.fail("Over-budget fit")
+    )
+    with pytest.raises(ImageCapacityError):
+        compute_statmorph_metrics(np.ones((1024, 1024)), np.ones((1024, 1024), dtype=int), 1, 1)

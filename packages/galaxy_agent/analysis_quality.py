@@ -2,6 +2,7 @@
 
 from typing import Any
 
+from packages.galaxy_agent.messages import image_capacity_message
 from packages.galaxy_core.application.analyses.registry import TASK_MODULES
 
 
@@ -34,6 +35,8 @@ def build_analysis_quality(results: dict[str, Any], task: str | None) -> dict[st
     issues = [
         "unverified_calibration" if native_fits else "rendered_image",
     ]
+    if any("resource_limit" in item.get("warnings", []) for item in recorded.values()):
+        issues.append("resource_limit")
     if not supplied_sigma:
         issues.append("background_noise_only")
     if not supplied_psf:
@@ -64,6 +67,8 @@ def build_analysis_quality(results: dict[str, Any], task: str | None) -> dict[st
 
 
 def quality_summary(quality: dict[str, Any], lang: str = "es") -> str:
+    if "resource_limit" in quality.get("issues", []):
+        return image_capacity_message(lang)
     if quality["status"] == "unavailable":
         return (
             "No valid measurements were obtained for the requested analysis. "

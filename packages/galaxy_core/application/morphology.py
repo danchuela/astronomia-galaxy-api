@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 from typing import Any
 
 import numpy as np
 
-from packages.galaxy_core.domain.errors import NoSourceDetectedError
+from packages.galaxy_core.domain.errors import ImageCapacityError, NoSourceDetectedError
 from packages.galaxy_core.domain.models import SegmentationResult
 
 logger = logging.getLogger(__name__)
+_SEP_LOCK = threading.Lock()
+MAX_MORPHOLOGY_STAMP_PIXELS = 768 * 768
 
 
 def compute_sep_background(image: np.ndarray) -> tuple[np.ndarray, float]:
@@ -59,15 +62,26 @@ def compute_sep_segmap(
     if invalid.all():
         raise NoSourceDetectedError("No usable background noise estimate or source")
     err = np.ascontiguousarray(np.where(invalid, 1.0, sigma), dtype=np.float32)
-    objects, segmap = sep.extract(
-        np.ascontiguousarray(np.where(invalid, 0.0, data_sub), dtype=np.float32),
-        thresh=thresh,
-        err=err,
-        mask=invalid,
-        segmentation_map=True,
-        deblend_nthresh=32,
-        deblend_cont=0.05,
-    )
+    # SEP's process-global default holds only 300k active detection pixels.
+    with _SEP_LOCK:
+        prior = sep.get_extract_pixstack()
+        sep.set_extract_pixstack(max(prior, min(data_sub.size, 1024 * 1024)))
+        try:
+            objects, segmap = sep.extract(
+                np.ascontiguousarray(np.where(invalid, 0.0, data_sub), dtype=np.float32),
+                thresh=thresh,
+                err=err,
+                mask=invalid,
+                segmentation_map=True,
+                deblend_nthresh=32,
+                deblend_cont=0.05,
+            )
+        except Exception as exc:
+            if "internal pixel buffer full" in str(exc):
+                raise ImageCapacityError("Detection pixel budget exceeded") from exc
+            raise
+        finally:
+            sep.set_extract_pixstack(prior)
     if len(objects) == 0:
         raise NoSourceDetectedError("SEP found no sources in the image")
 
@@ -195,6 +209,20 @@ def compute_basic_measurements(
     }
 
 
+def check_morphology_budget(labels: np.ndarray, label: int) -> None:
+    """Bound statmorph 0.7.2's default 2.5x stamp without changing its pixels."""
+    rows, columns = np.nonzero(labels == label)
+    if not rows.size:
+        return
+    width, height = int(np.ptp(columns)) + 1, int(np.ptp(rows)) + 1
+    x, y = int(columns.min()) + width // 2, int(rows.min()) + height // 2
+    dist = max(int(max(width, height) * 2.5 / 2), 24)
+    ny, nx = labels.shape
+    pixels = (min(ny, y + dist) - max(0, y - dist)) * (min(nx, x + dist) - max(0, x - dist))
+    if pixels > MAX_MORPHOLOGY_STAMP_PIXELS:
+        raise ImageCapacityError("Morphology stamp pixel budget exceeded")
+
+
 def compute_statmorph_metrics(
     data_sub: np.ndarray,
     segmap_labels: np.ndarray,
@@ -207,6 +235,8 @@ def compute_statmorph_metrics(
 ) -> dict[str, Any]:
     """Full morphological metrics via statmorph: CAS, Sérsic, radial shape."""
     import statmorph
+
+    check_morphology_budget(segmap_labels, main_label)
 
     sigma = (
         np.asarray(noise_sigma, dtype=float)

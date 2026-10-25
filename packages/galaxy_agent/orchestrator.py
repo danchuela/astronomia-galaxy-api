@@ -15,6 +15,7 @@ from packages.galaxy_agent.langchain_backend import LangChainBackend
 from packages.galaxy_agent.messages import (
     TOOL_STATUS,
     analysis_done_message,
+    image_capacity_message,
     lang_of,
     no_summary_message,
     target_not_found_message,
@@ -26,6 +27,7 @@ from packages.galaxy_agent.provenance_utils import build_provenance
 from packages.galaxy_agent.uploads import UploadedImageError, prepare_upload
 from packages.galaxy_core.analyzer import BasicGalaxyAnalyzer
 from packages.galaxy_core.domain.errors import (
+    ImageCapacityError,
     ImageIntegrityError,
     NoSourceDetectedError,
     TargetNotFoundError,
@@ -132,7 +134,12 @@ class TaskOrchestrator:
                 "warnings": [],
             }
             return
-        except (NoSourceDetectedError, ImageIntegrityError, UploadedImageError) as exc:
+        except (
+            NoSourceDetectedError,
+            ImageIntegrityError,
+            UploadedImageError,
+            ImageCapacityError,
+        ) as exc:
             registry.clear()
             capture_missing = isinstance(exc, ImageIntegrityError)
             message = (
@@ -155,6 +162,8 @@ class TaskOrchestrator:
             )
             if isinstance(exc, UploadedImageError):
                 message = exc.user_message(lang)
+            elif isinstance(exc, ImageCapacityError):
+                message = image_capacity_message(lang)
             elif request.uploaded_image and not capture_missing:
                 message = (
                     "No measurable source was detected in the uploaded image. "
@@ -180,9 +189,13 @@ class TaskOrchestrator:
             quality = {
                 "status": "unavailable",
                 "reason": (
-                    "invalid_upload"
-                    if isinstance(exc, UploadedImageError)
-                    else "capture_required" if capture_missing else "no_detection"
+                    "resource_limit"
+                    if isinstance(exc, ImageCapacityError)
+                    else (
+                        "invalid_upload"
+                        if isinstance(exc, UploadedImageError)
+                        else "capture_required" if capture_missing else "no_detection"
+                    )
                 ),
             }
             yield {

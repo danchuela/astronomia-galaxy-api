@@ -487,6 +487,8 @@ def test_run_isophotes_uses_actual_viewer_survey_metadata(
     registry.put(registry.image_handle(), _fake_ndarray())
     fake_seg = MagicMock()
     fake_seg.mask = np.ones((50, 50), dtype=np.uint8)
+    fake_seg.tight_segmap_labels = np.ones((50, 50), dtype=np.int32)
+    fake_seg.main_label = 1
     registry.put(registry.seg_handle(), fake_seg)
     registry.put(registry.metrics_handle(), {"centroid_x": 25.0, "centroid_y": 25.0})
     registry.put(

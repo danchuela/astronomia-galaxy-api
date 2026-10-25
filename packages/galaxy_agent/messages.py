@@ -10,6 +10,19 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+
+def image_capacity_message(lang: str = "es") -> str:
+    return (
+        "La fuente requiere más recursos de los disponibles para este análisis. "
+        "Sube un recorte a resolución original con margen para el fondo. "
+        "No he reducido la imagen ni rellenado las medidas no calculadas."
+        if lang == "es"
+        else "This source exceeds the resource budget for this analysis. "
+        "Upload a native-resolution cutout with enough surrounding sky. "
+        "I have not resized the image or filled in unmeasured values."
+    )
+
+
 Lang = Literal["es", "en"]
 
 TARGET_REQUIRED_MESSAGE = (
