@@ -14,7 +14,7 @@ from packages.galaxy_core.application.morphology import (
     compute_sep_background_maps,
     compute_sep_segmap,
 )
-from packages.galaxy_core.domain.errors import NoSourceDetectedError
+from packages.galaxy_core.domain.errors import ImageCapacityError, NoSourceDetectedError
 
 
 def segmentation_inputs(upload: UploadedImage, prepared: PreparedUpload) -> dict[str, Any]:
@@ -39,6 +39,7 @@ def inspect_image(upload: UploadedImage) -> dict[str, Any]:
     if prepared.noise_sigma is not None:
         sigma = prepared.noise_sigma
     sources = []
+    detection_status = "ok"
     try:
         objects, _, _, main_label = compute_sep_segmap(data_sub, sigma)
         for i, obj in enumerate(objects[:500]):
@@ -52,7 +53,9 @@ def inspect_image(upload: UploadedImage) -> dict[str, Any]:
                 }
             )
     except NoSourceDetectedError:
-        pass
+        detection_status = "no_detection"
+    except ImageCapacityError:
+        detection_status = "resource_limit"
     with Image.open(io.BytesIO(prepared.preview)) as image:
         image.thumbnail((1024, 1024))
         buffer = io.BytesIO()
@@ -63,6 +66,7 @@ def inspect_image(upload: UploadedImage) -> dict[str, Any]:
         "height": h,
         "preview": "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode(),
         "sources": sources,
+        "detection_status": detection_status,
         "hdus": fits_hdus(prepared.original) if prepared.provenance["input_kind"] == "fits" else [],
         "sha256": prepared.provenance["sha256"],
     }

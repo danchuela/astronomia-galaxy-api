@@ -13,6 +13,7 @@ from packages.galaxy_core.domain.models import SegmentationResult
 logger = logging.getLogger(__name__)
 _SEP_LOCK = threading.Lock()
 MAX_MORPHOLOGY_STAMP_PIXELS = 768 * 768
+MAX_DETECTION_PIXELS = 300_000
 
 
 def compute_sep_background(image: np.ndarray) -> tuple[np.ndarray, float]:
@@ -62,10 +63,12 @@ def compute_sep_segmap(
     if invalid.all():
         raise NoSourceDetectedError("No usable background noise estimate or source")
     err = np.ascontiguousarray(np.where(invalid, 1.0, sigma), dtype=np.float32)
+    if np.count_nonzero((data_sub > thresh * err) & ~invalid) > MAX_DETECTION_PIXELS:
+        raise ImageCapacityError("Detection pixel budget exceeded")
     # SEP's process-global default holds only 300k active detection pixels.
     with _SEP_LOCK:
         prior = sep.get_extract_pixstack()
-        sep.set_extract_pixstack(max(prior, min(data_sub.size, 1024 * 1024)))
+        sep.set_extract_pixstack(min(data_sub.size, MAX_DETECTION_PIXELS))
         try:
             objects, segmap = sep.extract(
                 np.ascontiguousarray(np.where(invalid, 0.0, data_sub), dtype=np.float32),

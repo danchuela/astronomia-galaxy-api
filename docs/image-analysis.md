@@ -52,7 +52,10 @@ downloads remain available. The BFF reports that another analysis is running, no
 that the module is broken. Production runs one Uvicorn worker. Increase workers
 only after measuring memory per process. This bounds admission, not execution time.
 
-Detection uses a bounded SEP active-pixel buffer (up to 1,048,576 pixels).
+Detection uses a bounded SEP active-pixel buffer (up to 300,000 pixels).
+An above-threshold pixel-count precheck rejects expensive fields before detection.
+Inspection still returns the preview and a resource-limit status so a smaller
+region can be selected. These limits never cause implicit resampling.
 CAS/Sersic/isophote workloads whose standard 2.5x source stamp would exceed
 589,824 pixels are explicitly unavailable. Segmentation and radial measurements
 can still be returned. No pixels are downsampled to fit this budget; use a native

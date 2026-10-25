@@ -205,7 +205,7 @@ def test_sep_pixel_budget_is_bounded_restored_and_not_reported_as_a_service_erro
     prior = sep.get_extract_pixstack()
 
     def full(*args, **kwargs):
-        assert sep.get_extract_pixstack() == 1024 * 1024
+        assert sep.get_extract_pixstack() == 300_000
         raise Exception("internal pixel buffer full")
 
     monkeypatch.setattr(sep, "extract", full)
@@ -222,3 +222,21 @@ def test_large_morphology_stamp_is_rejected_before_statmorph_allocates(monkeypat
     )
     with pytest.raises(ImageCapacityError):
         compute_statmorph_metrics(np.ones((1024, 1024)), np.ones((1024, 1024), dtype=int), 1, 1)
+
+
+def test_dense_source_is_rejected_before_sep_allocates_its_deblending_buffers(monkeypatch):
+    from packages.galaxy_core.application.morphology import compute_sep_segmap
+
+    monkeypatch.setattr("sep.extract", lambda *a, **kw: pytest.fail("Over-budget detection"))
+    with pytest.raises(ImageCapacityError):
+        compute_sep_segmap(np.full((600, 600), 5.0), 1)
+
+
+def test_inspection_keeps_the_preview_available_when_detection_is_over_budget(monkeypatch):
+    def limited(*a, **kw):
+        raise ImageCapacityError("Detection budget")
+
+    monkeypatch.setattr("packages.galaxy_agent.image_inspection.compute_sep_segmap", limited)
+    result = inspect_image(upload())
+    assert result["detection_status"] == "resource_limit" and result["sources"] == []
+    assert result["preview"].startswith("data:image/png;base64,")
