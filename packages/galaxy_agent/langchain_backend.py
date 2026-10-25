@@ -74,7 +74,7 @@ _METRIC_TRANSLATIONS: dict[str, str] = {
 }
 
 
-def _format_metrics_spanish(morphology_summary: str) -> str:
+def format_metrics_spanish(morphology_summary: str) -> str:
     """Translate English metric labels to Spanish deterministically."""
     result = morphology_summary
     for eng, spa in _METRIC_TRANSLATIONS.items():
@@ -263,13 +263,22 @@ class LangChainBackend:
         last_user_text = current_message
 
         viewer_ctx: str | None = None
-        if request.view_ra_deg is not None and request.view_hips_id:
+        if not request.uploaded_image and request.view_ra_deg is not None and request.view_hips_id:
             viewer_ctx = (
                 f"{request.view_ra_deg:.4f}°, Dec {request.view_dec_deg:.4f}°, "
                 f"survey {request.view_hips_id}, campo {request.view_size_arcmin:.1f}'"
             )
 
         system_prompt = self._build_system_prompt(viewer_context=viewer_ctx, lang=lang_of(request))
+        if request.uploaded_image:
+            system_prompt += (
+                "\nIMAGEN ADJUNTA: el usuario ha elegido sus propios píxeles como entrada. "
+                "Puedes analizarla sin nombre de objeto, coordenadas, catálogo ni visor. "
+                "Interpreta el análisis solicitado (CAS, Sérsic, perfil, segmentación, isofotas). "
+                "Si pide analizar la imagen sin especificar técnica, task=morphology_summary. "
+                "No inventes la identidad a partir del historial o del archivo. "
+                "Para analizar la imagen: can_fulfill=true, name=null, ra_deg=null, dec_deg=null."
+            )
 
         # Separate current message from history so the LLM cannot mistake
         # a name in the history (e.g. "M87") for the object in the current message.
@@ -327,6 +336,7 @@ class LangChainBackend:
                 options=request.options or {},
                 out_of_scope=True,
                 decline_message=decline_reason,
+                uploaded_image=request.uploaded_image,
                 answer_language=request.answer_language,
             )
 
@@ -393,7 +403,8 @@ class LangChainBackend:
             "isophotes",
         }
         task_str = str(data.get("task") or "")
-        task: TaskType = task_str if task_str in valid_tasks else "resolve"  # type: ignore[assignment]
+        default_task: TaskType = "morphology_summary" if request.uploaded_image else "resolve"
+        task: TaskType = task_str if task_str in valid_tasks else default_task  # type: ignore[assignment]
 
         return AnalyzeRequest(
             request_id=request.request_id,
@@ -408,6 +419,7 @@ class LangChainBackend:
             view_size_arcmin=request.view_size_arcmin,
             view_hips_id=request.view_hips_id,
             image_data=request.image_data,
+            uploaded_image=request.uploaded_image,
             view_metadata=request.view_metadata,
             answer_language=request.answer_language,
         )
@@ -426,7 +438,7 @@ class LangChainBackend:
             return self._english_summary(
                 target_name, band, morphology_summary, user_message, simbad_morph_type
             )
-        metrics_block = _format_metrics_spanish(morphology_summary)
+        metrics_block = format_metrics_spanish(morphology_summary)
 
         api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
         if not api_key:

@@ -21,6 +21,7 @@ from langchain_core.tools import BaseTool, tool
 from packages.galaxy_agent.analysis_quality import build_analysis_quality, quality_summary
 from packages.galaxy_agent.artifacts import ArtifactWriter
 from packages.galaxy_agent.context_registry import ContextRegistry
+from packages.galaxy_agent.langchain_backend import format_metrics_spanish
 from packages.galaxy_agent.messages import (
     image_loaded_message,
     isophotes_unavailable_message,
@@ -37,6 +38,7 @@ from packages.galaxy_agent.tools import (
     tool_run_analysis,
     tool_segment,
 )
+from packages.galaxy_agent.uploads import PreparedUpload, prepare_upload
 from packages.galaxy_agent.view_integrity import validate_view_capture
 from packages.galaxy_core.analyzer import BasicGalaxyAnalyzer
 from packages.galaxy_core.application.morphology import (
@@ -137,6 +139,8 @@ def _image_metadata_for_report(
     registry: ContextRegistry,
     opts: dict[str, Any],
 ) -> tuple[str, str, float]:
+    if _get_results(registry).get("image_provenance", {}).get("source") == "upload":
+        return "", "", 0.0
     coords: dict[str, Any] = {}
     try:
         raw = registry.get(_coordinates_key(registry.request_id))
@@ -370,11 +374,46 @@ def make_tool_resolve_and_fetch_image(
         has_viewer = request.view_ra_deg is not None and request.view_dec_deg is not None
         rid = registry.request_id
 
+        if request.uploaded_image:
+            try:
+                cached_upload = registry.get(f"upload:{rid}")
+            except KeyError:
+                cached_upload = None
+            prepared = (
+                cached_upload
+                if isinstance(cached_upload, PreparedUpload)
+                else prepare_upload(request.uploaded_image)
+            )
+            artifacts.append(
+                artifact_store.save_original(rid, prepared.original, prepared.extension)
+            )
+            preview = artifact_store.save_image(rid, prepared.preview)
+            artifacts.append(preview)
+            results = _get_results(registry)
+            results["image_provenance"] = prepared.provenance
+            results["analysis_parameters"] = {
+                "task": request.task,
+                "thresh_sigma": opts.get("thresh_sigma", 2.0),
+                "n_bins": opts.get("n_bins", 25),
+                "n_iso": opts.get("n_iso", 8),
+            }
+            handle = registry.image_handle()
+            registry.put(handle, prepared.pixels)
+            registry.put(_image_path_key(rid), preview.path)
+            registry.put(_coordinates_key(rid), {})
+            return {
+                "image_handle": handle,
+                "image_path": preview.path,
+                "survey_used": "uploaded_image",
+                "ra_deg": None,
+                "dec_deg": None,
+            }
+
         # For resolve task: only SESAME lookup, no image download regardless of viewer state.
         # The frontend uses the returned coordinates to open the Aladin viewer.
         # Must check before the viewer paths so a viewer-active request to "show M51"
         # resolves M51's coordinates instead of reusing the visible M87 canvas.
-        if request.task == "resolve":
+        if request.task == "resolve" and not request.uploaded_image:
             resolved = _resolve_target(request, opts)
             coordinates: dict[str, Any] = {
                 "ra_deg": resolved.ra_deg,
@@ -496,7 +535,8 @@ def make_tool_segment_image(
         Stores the SegmentationResult in the context registry for subsequent analysis tools.
         Returns seg_handle and mask statistics.
         """
-        image: np.ndarray = registry.get(image_handle)  # type: ignore[assignment]
+        # The current request owns its pixels; never trust an LLM-copied identifier.
+        image: np.ndarray = registry.get(registry.image_handle())  # type: ignore[assignment]
         opts = request.options or {}
         thresh_sigma = float(opts.get("thresh_sigma", 2.0))
 
@@ -551,8 +591,8 @@ def make_tool_analyze(
         their respective tools. Stores metrics in the registry.
         Returns metrics dict and morphology_text summary.
         """
-        image: np.ndarray = registry.get(image_handle)  # type: ignore[assignment]
-        segmentation: SegmentationResult = registry.get(seg_handle)  # type: ignore[assignment]
+        image: np.ndarray = registry.get(registry.image_handle())  # type: ignore[assignment]
+        segmentation: SegmentationResult = registry.get(registry.seg_handle())  # type: ignore[assignment]
         task = request.task or "measure_basic"
         opts = request.options or {}
         analysis_params = {k: opts[k] for k in ("n_bins",) if k in opts}
@@ -621,11 +661,14 @@ def make_tool_run_isophotes(
         or after segment_image (for task isophotes).
         Returns isophote_summary with axis ratios, position angles, and intensity profiles.
         """
-        image: np.ndarray = registry.get(image_handle)  # type: ignore[assignment]
-        segmentation: SegmentationResult = registry.get(seg_handle)  # type: ignore[assignment]
+        image: np.ndarray = registry.get(registry.image_handle())  # type: ignore[assignment]
+        segmentation: SegmentationResult = registry.get(registry.seg_handle())  # type: ignore[assignment]
         opts = request.options or {}
         target_name = (request.target and request.target.name) or "unknown"
         hips_id = opts.get("_resolved_hips_id") or request.view_hips_id
+        if request.uploaded_image:
+            target_name = "uploaded image" if lang_of(request) == "en" else "imagen adjunta"
+            hips_id = None
         n_iso = int(opts.get("n_iso", 8))
 
         # Use metrics already computed by analyze_galaxy if available,
@@ -714,6 +757,8 @@ def make_tool_enrich_metadata(
         Network failures are silently logged and return empty strings.
         """
         target_name = (request.target and request.target.name) or ""
+        if request.uploaded_image:
+            return {"object_info": "", "hst_jwst": ""}
         _PLACEHOLDER = "from conversation"
         object_info: dict[str, Any] | None = None
         hst_jwst: dict[str, Any] | None = None
@@ -781,7 +826,7 @@ def make_tool_generate_final_report(
         lang = lang_of(request)
 
         # Resolve task: SESAME-only — return viewer guidance so the user can explore first.
-        if request.task == "resolve":
+        if request.task == "resolve" and not request.uploaded_image:
             target_name = (request.target and request.target.name) or None
             try:
                 coords: dict[str, Any] = registry.get(_coordinates_key(registry.request_id))  # type: ignore[assignment]
@@ -829,8 +874,12 @@ def make_tool_generate_final_report(
             registry.put(_summary_key(registry.request_id), summary)
             return {"summary": summary}
 
-        if langchain_backend is None:
-            summary = morphology_text
+        if langchain_backend is None or request.uploaded_image:
+            summary = (
+                format_metrics_spanish(morphology_text)
+                if request.uploaded_image and lang == "es"
+                else morphology_text
+            )
         else:
             catalog_used, band_used, size_arcmin = _image_metadata_for_report(registry, opts)
 
@@ -843,9 +892,12 @@ def make_tool_generate_final_report(
                 lang=lang,
             )
 
-        if langchain_backend is None:
+        if langchain_backend is None or request.uploaded_image:
             catalog_used, _band_used, size_arcmin = _image_metadata_for_report(registry, opts)
         summary = append_catalog_and_field(summary, catalog_used, size_arcmin, lang)
+        if request.uploaded_image:
+            label = "Archivo analizado" if lang == "es" else "Analysed file"
+            summary = f"{label}: {request.uploaded_image.filename}\n\n{summary}"
 
         def _reg_text(key: str) -> str:
             try:

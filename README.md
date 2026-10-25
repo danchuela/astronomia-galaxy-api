@@ -33,6 +33,26 @@ After resolving a target, the agent pipeline can query:
 
 See [`packages/galaxy_core/README.md`](packages/galaxy_core/README.md) for metric conventions, input limitations, quality flags, PSF/noise handling, and validation scope. Rendered-image results are exploratory, not calibrated photometry.
 
+### User images
+
+The chat accepts PNG, JPEG, single-frame TIFF and uncompressed 2D FITS files,
+up to 8 MiB and 4,194,304 pixels (minimum 16 pixels per side). The JSON field
+`uploaded_image` contains `filename`, base64 `data` and an optional `hdu_index`.
+This is an explicit alternative to the Aladin viewer, not a survey fallback.
+No catalogue identity, angular field, calibration or PSF is inferred from the filename.
+
+FITS analysis uses native float64 pixels after Astropy's BSCALE/BZERO scaling,
+including signed values and invalid-pixel masks. The display PNG is a separate
+percentile/asinh preview and is never used for measurements. A unique SCI image
+extension, or a unique 2D image HDU, is selected automatically; ambiguous files
+require an explicit HDU index. Data cubes and compressed FITS are not accepted.
+The immutable original and its SHA-256 are retained with the analysis artifacts.
+
+File bytes are not included in the LLM context or usage webhooks. The frontend
+keeps the active attachment in memory per conversation, not in localStorage;
+reloading the page requires attaching it again. Uploaded files use the same
+server artifact storage/retention policy as viewer analyses.
+
 ## Requirements
 
 - Python 3.11+

@@ -88,12 +88,12 @@ class AgentRunner:
             return request
         # When a viewer snapshot is present, skip the target placeholder — the
         # orchestrator reads view_ra_deg/view_hips_id directly
-        if request.target is None and request.view_ra_deg is not None:
+        if request.target is None and (request.view_ra_deg is not None or request.uploaded_image):
             target = None
         else:
             target = request.target or Target(name=_PLACEHOLDER_TARGET)
         task: TaskType = request.task if request.task is not None else _DEFAULT_TASK
-        return request.to_resolved_request(target=target, task=task)  # type: ignore[arg-type]
+        return request.to_resolved_request(target=target, task=task)
 
     def _needs_target_prompt(self, request: AnalyzeRequest) -> bool:
         opts = request.options or {}
@@ -105,6 +105,7 @@ class AgentRunner:
             and not request.image_url
             and not has_coords
             and not has_view
+            and not request.uploaded_image
         )
 
     def _has_confirmed_viewer(self, request: AnalyzeRequest) -> bool:
@@ -115,7 +116,11 @@ class AgentRunner:
         )
 
     def _must_open_viewer_before_analysis(self, request: AnalyzeRequest) -> bool:
-        return request.task in _ANALYSIS_TASKS and not self._has_confirmed_viewer(request)
+        return (
+            request.task in _ANALYSIS_TASKS
+            and not request.uploaded_image
+            and not self._has_confirmed_viewer(request)
+        )
 
     def _as_viewer_setup_request(self, request: AnalyzeRequest) -> AnalyzeRequest:
         if request.target is None:

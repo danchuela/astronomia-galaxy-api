@@ -25,8 +25,10 @@ def build_analysis_quality(results: dict[str, Any], task: str | None) -> dict[st
     status = "exploratory"
     if modules and available < len(modules):
         status = "partial" if available else "unavailable"
+    provenance = results.get("image_provenance", {})
+    native_fits = provenance.get("input_kind") == "fits"
     issues = [
-        "rendered_image",
+        "unverified_calibration" if native_fits else "rendered_image",
         "background_noise_only",
         "unknown_psf",
         "no_parameter_uncertainties",
@@ -40,7 +42,8 @@ def build_analysis_quality(results: dict[str, Any], task: str | None) -> dict[st
         issues.append("suspect_measurement")
     return {
         "status": status,
-        "input_kind": "rendered",
+        "input_kind": "fits" if native_fits else "rendered",
+        "source": provenance.get("source", "viewer"),
         "calibrated": False,
         "psf": "not_supplied",
         "uncertainty": "background_only",
@@ -64,6 +67,14 @@ def quality_summary(quality: dict[str, Any], lang: str = "es") -> str:
         if quality["status"] == "partial"
         else ""
     )
+    if quality.get("input_kind") == "fits":
+        return prefix + (
+            "Exploratory analysis on native FITS pixels. "
+            "Photometric calibration and PSF have not been verified."
+            if lang == "en"
+            else "Análisis exploratorio sobre los píxeles originales del FITS. "
+            "La calibración fotométrica y la PSF no se han verificado."
+        )
     return prefix + (
         "Exploratory analysis of the rendered image, not calibrated photometry."
         if lang == "en"

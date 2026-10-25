@@ -23,6 +23,7 @@ from packages.galaxy_agent.messages import (
 )
 from packages.galaxy_agent.models import AnalyzeRequest, AnalyzeResponse, Artifact, Provenance
 from packages.galaxy_agent.provenance_utils import build_provenance
+from packages.galaxy_agent.uploads import UploadedImageError, prepare_upload
 from packages.galaxy_core.analyzer import BasicGalaxyAnalyzer
 from packages.galaxy_core.domain.errors import (
     ImageIntegrityError,
@@ -76,6 +77,8 @@ class TaskOrchestrator:
         _TOOL_STATUS = TOOL_STATUS[lang]
 
         try:
+            if request.uploaded_image:
+                registry.put(f"upload:{rid}", prepare_upload(request.uploaded_image))
             tools = build_agent_tools(
                 registry=registry,
                 analyzer=self.analyzer,
@@ -94,6 +97,7 @@ class TaskOrchestrator:
                 f"target: {target_name}",
                 f"has_viewer_image: {has_viewer}",
                 f"has_image_data: {bool(request.image_data)}",
+                f"has_uploaded_image: {bool(request.uploaded_image)}",
             ]
             if has_viewer:
                 context_lines.append(f"view_hips_id: {request.view_hips_id or 'none'}")
@@ -128,7 +132,7 @@ class TaskOrchestrator:
                 "warnings": [],
             }
             return
-        except (NoSourceDetectedError, ImageIntegrityError) as exc:
+        except (NoSourceDetectedError, ImageIntegrityError, UploadedImageError) as exc:
             registry.clear()
             capture_missing = isinstance(exc, ImageIntegrityError)
             message = (
@@ -149,10 +153,24 @@ class TaskOrchestrator:
                     "Revisa el encuadre, el zoom y el survey antes de volver a intentarlo."
                 )
             )
+            if isinstance(exc, UploadedImageError):
+                message = exc.user_message(lang)
+            elif request.uploaded_image and not capture_missing:
+                message = (
+                    "No measurable source was detected in the uploaded image. "
+                    "Check the image and its framing."
+                    if lang == "en"
+                    else "No he detectado una fuente medible en la imagen adjunta. "
+                    "Revisa la imagen y su encuadre."
+                )
             yield {"type": "summary", "summary": message}
             quality = {
                 "status": "unavailable",
-                "reason": "capture_required" if capture_missing else "no_detection",
+                "reason": (
+                    "invalid_upload"
+                    if isinstance(exc, UploadedImageError)
+                    else "capture_required" if capture_missing else "no_detection"
+                ),
             }
             yield {
                 "type": "end",

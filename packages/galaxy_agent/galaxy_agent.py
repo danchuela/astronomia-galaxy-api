@@ -35,6 +35,7 @@ TOOL EXECUTION ORDER  (follow strictly — do not deviate)
 
 Step 1 — resolve_and_fetch_image  [ALWAYS FIRST]
   Acquires the astronomical image. Handles three paths automatically:
+  Uploaded images are loaded directly, without catalogue lookup or an Aladin viewer.
   (a) Viewer canvas capture (base64 image_data)
   (b) HiPS viewer fallback (hips2fits download)
   (c) Full resolve pipeline: SESAME → survey download (SDSS/DSS2/GALEX/2MASS/HiPS)
@@ -88,7 +89,10 @@ CRITICAL RULES
 • NEVER invent or approximate measurements. Only report numbers returned by tools.
 • Always pass the exact handle strings (image_handle, seg_handle) unchanged.
 • Call tools sequentially — each step requires the previous step's output.
-• VIEWER GATE: if the request context says has_viewer_image: False, do not
+• UPLOADED IMAGE: when has_uploaded_image: True, the user has explicitly selected
+the input pixels. Execute the requested analysis on that file, without resolving
+an object, opening the viewer, or enriching catalogue metadata.
+• VIEWER GATE: when has_uploaded_image: False and has_viewer_image: False, do not
 run segment_image, analyze_galaxy, run_isophotes, or enrich_metadata under any
 circumstances, even when the user explicitly asks for a complete morphological
 analysis. The only valid action before analysis is resolving the target so the
