@@ -5,6 +5,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from packages.galaxy_agent.uploads import UploadedImage
+
 TaskType = Literal[
     "morphology_summary",
     "segment",
@@ -44,6 +46,7 @@ class AnalyzeRequest(BaseModel):
     view_size_arcmin: float | None = None
     view_hips_id: str | None = None
     image_data: str | None = None
+    uploaded_image: UploadedImage | None = None
     view_metadata: dict[str, Any] = Field(default_factory=dict)
     # Answer language resolved by the BFF ("es" | "en"); None means Spanish.
     answer_language: Literal["es", "en"] | None = None
@@ -61,7 +64,7 @@ class AnalyzeRequest(BaseModel):
             self.messages is not None and len(self.messages) > 0
         )
         has_structured = self.target is not None and self.task is not None
-        if not has_nl and not has_structured:
+        if not has_nl and not has_structured and not self.uploaded_image:
             raise ValueError(
                 "Provide natural language (message or messages) or structured (target and task)."
             )
@@ -74,7 +77,7 @@ class AnalyzeRequest(BaseModel):
             return [ChatMessage(role="user", content=self.message.strip())]
         return []
 
-    def to_resolved_request(self, target: Target, task: TaskType) -> AnalyzeRequest:
+    def to_resolved_request(self, target: Target | None, task: TaskType) -> AnalyzeRequest:
         return AnalyzeRequest(
             request_id=self.request_id,
             message=self.message,
@@ -90,6 +93,7 @@ class AnalyzeRequest(BaseModel):
             view_size_arcmin=self.view_size_arcmin,
             view_hips_id=self.view_hips_id,
             image_data=self.image_data,
+            uploaded_image=self.uploaded_image,
             view_metadata=self.view_metadata,
             answer_language=self.answer_language,
         )
