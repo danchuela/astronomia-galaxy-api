@@ -13,3 +13,7 @@ class NoSourceDetectedError(LookupError):
 
 class ImageIntegrityError(ValueError):
     """The viewer capture is missing or no longer matches its field metadata."""
+
+
+class ImageCapacityError(ValueError):
+    """A valid image exceeds the bounded scientific workload budget."""
