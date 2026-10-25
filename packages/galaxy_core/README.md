@@ -1,135 +1,112 @@
-# galaxy_core — Morphological Analysis
+# Galaxy Image Analysis
 
-Pure data-science layer. No LLM, no FastAPI.
+Pure numerical layer, without an LLM or HTTP dependencies in the analysis algorithms.
 
-## Analysis modules
+## Input and Scope
 
-### CAS — Concentration, Asymmetry, Smoothness
+The current application analyzes rendered survey images or the Aladin image plane.
+RGB inputs are converted to Pillow luminance; native grayscale precision is retained.
+PNG capture avoids an additional lossy encoding, but does not make the survey rendering
+linear, calibrated, or single-band scientific data. Results are exploratory measurements
+of the supplied pixels, not calibrated photometry or validated galaxy classifications.
 
-Based on Conselice (2003, ApJS 147, 1). Computed via **statmorph** on background-subtracted images using the tight segmap (raw SEP output) to avoid diluting metrics with diffuse tidal material.
+The original bytes remain immutable. Segmentation annotations are separate plots.
+Request results include the input SHA-256, image dimensions, capture geometry, software
+versions, module status, and input limitations. Different surveys, stretches, resolutions,
+fields, and segmentations can yield different measurements of the same galaxy.
 
-| Parameter | Formula | Typical range | What it measures |
-|-----------|---------|---------------|-----------------|
-| **C** | 5 log(r80 / r20) | 1–5 | Central light concentration. High C → dominant bulge or compact core. |
-| **A** | Σ\|I − I₁₈₀\| / Σ\|I\| | 0–1 | Rotational asymmetry. A > 0.35 (Conselice 2003 merger threshold). |
-| **S** | Σ\|I − I_smooth\| / Σ\|I\| | 0–0.5 | High-frequency structure: star-forming clumps, dust lanes. Near 0 or negative for smooth ellipticals. |
+## Segmentation and Background
 
-M101 (spiral, S_AB): C=2.24, A=0.28, S=−0.06 — M87 (elliptical, AGN): C=2.21, A=−0.05, S=−0.05 — NGC 4038 (merger): C=1.79, A=0.46, S=0.02
+SEP supplies a spatial background and a background RMS (sigma) map. The background is
+subtracted before all intensity measurements. Invalid pixels are excluded. The source
+with the highest `area / (distance_to_image_center_squared + 1)` is selected, not
+necessarily the named galaxy; multiple sources and boundary truncation are recorded.
+Automatic identity association or interactive target-mask correction is not implemented.
 
-![CAS indices — M101 spiral](../../docs/assets/cas-m101.png)
-*M101 (spiral). A=0.28 indicates moderate asymmetry from spiral arms.*
+The complete SEP label map is retained to exclude detected neighbors. The primary mask
+is grown by up to three pixels above 1.5 times background sigma, without overwriting
+other source labels. Statmorph receives the tight label map. No detection is an expected
+clarification outcome: no percentile-based replacement source is manufactured.
 
-![CAS indices — NGC 4038 merger](../../docs/assets/cas-ngc4038.png)
-*NGC 4038/4039 (Antennae merger). A=0.46 exceeds the 0.35 merger threshold.*
+The background mesh is a heuristic, not a jointly fitted sky model. Extended sources
+that dominate the frame require a larger field. Neighbor masks do not remove undetected
+sources, blended flux, or all PSF wings.
 
-**Additional statmorph fields** returned alongside CAS:
+## CAS and Geometry
 
-| Field | Description |
-|-------|-------------|
-| `rpetro_circ` | Circular Petrosian radius (px): the radius where the annular mean surface brightness drops to 20% of the interior mean. Standard galaxy size estimator. |
-| `r20` / `r80` | Radii enclosing 20% and 80% of the Petrosian flux. Used to compute C. |
-| `ellipticity_asymmetry` | Ellipticity of the best-fit ellipse to the asymmetry distribution. |
-| `elongation_asymmetry` | Semi-major / semi-minor axis ratio of the asymmetry ellipse. |
-| `orientation_asymmetry` | Position angle of the asymmetry ellipse (rad). Used as initial PA for isophote fitting. |
-| `centroid_x` / `centroid_y` | Position of the asymmetry minimum (px). Differs from flux centroid in mergers or lopsided galaxies. |
-| `sn_per_pixel` | Median S/N per pixel inside the segmap. Values below ~2.5 indicate unreliable CAS measurements. |
-| `flag` | statmorph quality flag: 0 = clean, 1 = minor issues, 2 = unreliable. |
-| `flag_sersic` | 0 = Sérsic fit converged; non-zero = fit failed, Sérsic parameters not reported. |
+Statmorph computes concentration (`5 log10(r80/r20)`), background-corrected rotational
+asymmetry, and its implemented smoothness convention. These are not interchangeable
+with every CAS implementation. Negative background-corrected A/S are retained;
+nonfinite values and statmorph's `-99` failure sentinel become null.
 
-**Ground-based caveat:** PSF smearing lowers C and S artificially. Do not compare values directly against HST-calibrated classification boundaries.
+Statmorph's `weightmap` is a **standard-deviation image**, not inverse variance.
+The current map estimates background noise only: it lacks calibrated source Poisson
+noise and resampling covariance. `flag >= 2` suppresses CAS; `flag == 1` is reported as
+suspect. A quality flag of zero is not proof of scientific accuracy. Published merger
+or Hubble-type boundaries are not applied to arbitrary rendered images.
 
----
+Basic centroid and ellipticity are positive-intensity-weighted second moments of the
+background-subtracted primary region. The clipped positive weights are an explicit
+geometry convention, not an unbiased low-S/N estimator. Flux and mean intensity retain
+signed sky-subtracted values. `asymmetry_center_x/y` are separate from the flux centroid.
 
-### Sérsic profile fit
+## Single-Component Sersic Fit
 
-Based on Sérsic (1963). Fitted by statmorph with a 2D model convolved with a synthetic Gaussian PSF (FWHM = 2 px). Skipped when `flag_sersic > 0`.
+Statmorph fits one two-dimensional Sersic component. No artificial universal PSF is
+assumed. A supplied numerical PSF is normalized and used in convolution; otherwise the
+fit is explicitly not PSF-corrected. Rendered-viewer analysis currently has no measured
+PSF. The fit is not a bulge/disk decomposition, and an `n < 2` versus `n > 2` distinction
+is not guaranteed to classify the input accurately.
 
-| Parameter | Description | Interpretation |
-|-----------|-------------|----------------|
-| `sersic_n` | Sérsic index | n ≈ 1: exponential disk. n ≈ 4: de Vaucouleurs elliptical. n > 4: compact nucleus. |
-| `sersic_rhalf` | Half-light radius (px) | Radius enclosing 50% of the fitted flux. |
-| `sersic_ellip` | Ellipticity (1 − b/a) | 0 = circular. ~0.3–0.6 = inclined disk. > 0.7 = edge-on. |
-| `sersic_theta` | Position angle (rad) | Orientation of the major axis. |
+Sersic parameters are withheld when `flag_sersic != 0` or the global fit is invalid.
+The diagnostic uses the **actual fitted model and its fitting stamp**, including its
+PSF when supplied: data, model, data-minus-model, and residual divided by background
+sigma. Data/model share one intensity normalization; residual scales are centered on
+zero. Contaminants and invalid pixels are hidden. The pinned statmorph adapter accesses
+its fitted callable; dependency upgrades must run the recovery and residual tests.
+Parameter covariance, posterior intervals, PSF uncertainty, and sky uncertainty are
+not currently estimated. Residual structure is not automatically identified as arms,
+star formation, or interactions.
 
-**Ground-based caveat:** PSF correction uses a synthetic Gaussian, not a measured PSF. The n < 2 / n > 2 distinction (disk vs. bulge-dominated) is reliable; fine-grained n values are not.
+## Radial Profile
 
-**Three-panel plot** produced when the fit converges:
+Mean signed background-subtracted intensity is measured in nonoverlapping elliptical
+annuli using the moment centroid, ellipticity, and position angle. The last radius comes
+from the primary mask. Neighbor and invalid pixels are excluded; unlabeled background
+within the annuli is retained. Output includes radii in pixels, mean intensity, valid
+pixel counts, and `sqrt(sum(sigma_i**2)) / N` when sigma is available.
 
-| Panel | Content |
-|-------|---------|
-| **Data (background-sub)** | Input image after SEP background subtraction — the pixel data statmorph receives. |
-| **Sérsic Model** | Fitted 2D Sérsic function on the same grid. Smooth and symmetric by definition; no arms or bars. |
-| **Residual (data − model)** | Pixel-by-pixel difference. Red = galaxy exceeds model (spiral arms, HII regions). Blue = model overestimates (outer disk). For spirals this maps non-axisymmetric structure. |
+These errors assume independent background noise only. They are not total photometric
+errors, parameter confidence intervals, or calibrated surface brightness in mag/arcsec2.
+No PSF deconvolution is performed. `n_bins` must be between 4 and 100.
 
-![Sérsic 2D fit — M101](../../docs/assets/sersic-m101.png)
-*M101 (spiral). n=0.56 indicates a disk-dominated profile. The residual clearly shows the spiral arms and HII knots not captured by the smooth model.*
+## Isophotes
 
----
+Photutils fits ellipses on the signed background-subtracted image with invalid and
+neighbor pixels masked. A valid result requires at least three valid isophotes. The
+table preserves intensity, ellipticity, position angle, center, available fitting
+errors, and stopping codes without rounding away precision. Formal fitting errors do
+not include calibration, PSF, sky, or correlated-noise systematics.
 
-### Radial brightness profile
+The separate visualization draws contours on a smoothed display image. These contours
+are **not** the fitted ellipses. Failed ellipse fitting returns an empty table with an
+unavailable module status; the segmentation boundary is never substituted for an
+isointensity contour. Lack of convergence is not itself evidence of an interaction.
 
-Computed directly on the image (not via statmorph). Mean flux in N concentric annuli from the centroid to the segmentation mask edge. `n_bins` is configurable (default 25).
+## Quality and Validation
 
-Output: `{"radii_px": [...], "mean_flux": [...]}`.
+Module availability and completeness are code-owned. Missing/failed modules produce
+partial or unavailable results, not an LLM assertion that all measurements completed.
+Catalog morphology is labeled separately from image measurements. The UI has one
+collapsible quality section instead of repeating caveats on every plot.
 
-| Profile shape | Implication |
-|---------------|-------------|
-| Smooth exponential decline | Disk-dominated |
-| Steep central peak + shallow outer slope | Bulge + disk composite |
-| Flat center + sharp drop | Bar, ring, or saturated nucleus |
-| Irregular / multiple bumps | Disturbed morphology or interaction |
+Tests cover blank fields, sigma semantics, neighbor exclusion, negative values,
+invalid flags, known moment geometry, background-subtracted annuli, actual-model
+residuals, and recovery of controlled PSF-convolved synthetic Sersic sources. They do
+not establish observational accuracy across heterogeneous surveys. A validated
+scientific mode still needs native linear science pixels, WCS/band/PSF/error metadata,
+calibration, systematic-error assessment, and an external reference benchmark.
 
-No PSF correction. The innermost annulus (~2–3 px) is PSF-smeared and should not be interpreted as the true nuclear brightness.
-
-![Radial brightness profile — M101](../../docs/assets/radial-profile-m101.png)
-*M101 (spiral). Smooth exponential decline consistent with a disk-dominated profile.*
-
----
-
-### Isophotes
-
-Elliptical isophote fitting via **photutils** `Ellipse`. Fits isophotes at increasing semi-major axes and returns a table with one row per isophote.
-
-| Field | Description |
-|-------|-------------|
-| `sma` | Semi-major axis (px) |
-| `intens` | Mean intensity along the isophote |
-| `ellip` | Ellipticity (1 − b/a) |
-| `pa_deg` | Position angle of the major axis (degrees) |
-| `x0` / `y0` | Isophote center (px) — may drift for lopsided galaxies |
-
-| Pattern | Implication |
-|---------|-------------|
-| Ellipticity increasing with radius | Disk becomes dominant outside the bulge |
-| Constant ellipticity and PA | Smooth symmetric disk |
-| PA twist with radius | Bar, warped disk, or triaxial bulge |
-| Non-convergence / large scatter | Irregular morphology or tidal distortion |
-
-**Visualization:** isointensity contours are drawn on the image using skimage `find_contours`. If photutils fails to converge, a single fallback contour at the segmap boundary is drawn instead.
-
-UV (GALEX) and radio surveys produce irregular emission that degrades ellipse fitting; optical surveys (SDSS, DSS2, PanSTARRS) give the most reliable results.
-
-![Isophotes — M101 spiral](../../docs/assets/isophotes-m101.png)
-*M101 (spiral). Irregular outer contours follow the spiral arms; inner isophotes are more regular.*
-
-![Isophotes — M87 elliptical](../../docs/assets/isophotes-m87.png)
-*M87 (elliptical). Concentric, nearly circular isophotes — characteristic of a relaxed elliptical.*
-
----
-
-## Segmentation
-
-Two segmaps are produced from a single SEP run:
-
-- **tight_segmap** — raw SEP output. Used as statmorph input to avoid diluting CAS metrics with diffuse outer flux.
-- **grown_segmap** — tight + 3 px dilation at 1.5σ. Used only for visual contour overlays.
-
-The main source is the largest detected object closest to the image center. If SEP finds no sources, a quantile-threshold fallback mask is used (`segmentation_metadata.algorithm = "quantile_fallback"`).
-
-The annotated image shows the grown segmap boundary in green and the asymmetry centroid in orange.
-
-![Segmentation — M87 elliptical](../../docs/assets/segmentation-m87.png)
-*M87 (elliptical). Single clean contour around a symmetric source.*
-
-![Segmentation — NGC 4038 merger](../../docs/assets/segmentation-ngc4038.png)
-*NGC 4038/4039 (Antennae). The segmap captures both nuclei and the tidal tails.*
+References: [statmorph API](https://statmorph.readthedocs.io/en/latest/api.html),
+[statmorph implementation](https://statmorph.readthedocs.io/en/latest/_modules/statmorph/statmorph.html),
+[Photutils isophotes](https://photutils.readthedocs.io/en/stable/user_guide/isophote.html).

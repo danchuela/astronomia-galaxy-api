@@ -42,11 +42,13 @@ class ArtifactStore:
 
     def save_measurements(self, request_id: str, payload: dict[str, Any]) -> Artifact:
         path = self._request_dir(request_id) / "measurements.json"
-        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        path.write_text(json.dumps(payload, indent=2, allow_nan=False), encoding="utf-8")
         return Artifact(type="report", path=self._relative(path))
 
     def save_image(self, request_id: str, image_bytes: bytes) -> Artifact:
         path = self._request_dir(request_id) / "image.jpg"
+        if path.exists() and path.read_bytes() != image_bytes:
+            raise ValueError("The original image for this request is immutable")
         path.write_bytes(image_bytes)
         return Artifact(type="image", path=self._relative(path))
 

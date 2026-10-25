@@ -4,9 +4,9 @@ import json
 import logging
 import os
 import re
-from typing import Any
+from typing import Any, Literal
 
-from openai import NOT_GIVEN, OpenAI
+from openai import Omit, OpenAI, omit
 
 from packages.galaxy_agent.domain.models import Target, TaskType
 from packages.galaxy_agent.messages import lang_of
@@ -17,6 +17,10 @@ from packages.galaxy_core.domain.imaging import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _reasoning_effort(model: str) -> Literal["none"] | Omit:
+    return "none" if model.startswith("gpt-6-luna") else omit
 
 
 def _parse_bool(value: object, default: bool) -> bool:
@@ -281,7 +285,7 @@ class LangChainBackend:
 
         response = self._client.chat.completions.create(
             model=self._parse_model,
-            reasoning_effort="none" if self._parse_model.startswith("gpt-6-luna") else NOT_GIVEN,
+            reasoning_effort=_reasoning_effort(self._parse_model),
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -404,6 +408,7 @@ class LangChainBackend:
             view_size_arcmin=request.view_size_arcmin,
             view_hips_id=request.view_hips_id,
             image_data=request.image_data,
+            view_metadata=request.view_metadata,
             answer_language=request.answer_language,
         )
 
@@ -440,15 +445,17 @@ class LangChainBackend:
             "Resultado del análisis morfológico:\n"
             f"{morphology_summary}\n\n"
             "Escribe UNA O DOS frases introductorias en español que resuman "
-            "los resultados morfológicos y la fiabilidad del análisis. "
-            "Si se proporciona el tipo morfológico de SIMBAD, menciónalo como referencia. "
+            "qué medidas se han obtenido y cuáles no están disponibles. "
+            "La entrada es una imagen renderizada, no fotometría calibrada. "
+            "No deduzcas clasificación, brazos, formación estelar ni interacciones "
+            "a partir de estos índices. No afirmes fiabilidad científica sin validación. "
             "NO incluyas ningún valor numérico, parámetro CAS, "
             "Sérsic, ni ninguna cifra. Solo una introducción cualitativa breve."
         )
         try:
             resp = self._client.chat.completions.create(
                 model=self._model,
-                reasoning_effort="none" if self._model.startswith("gpt-6-luna") else NOT_GIVEN,
+                reasoning_effort=_reasoning_effort(self._model),
                 messages=[
                     {
                         "role": "system",
@@ -497,15 +504,17 @@ class LangChainBackend:
             "Result of the morphological analysis:\n"
             f"{morphology_summary}\n\n"
             "Write ONE OR TWO introductory sentences in English that summarise "
-            "the morphological results and the reliability of the analysis. "
-            "If the SIMBAD morphological type is given, mention it as a reference. "
+            "which measurements are available and which are not. "
+            "The input is a rendered image, not calibrated photometry. "
+            "Do not infer classification, spiral arms, star formation or interactions "
+            "from these indices. Do not assert scientific reliability without validation. "
             "Do NOT include any numerical value, CAS or Sérsic parameter, "
             "or any figure. Only a brief qualitative introduction."
         )
         try:
             resp = self._client.chat.completions.create(
                 model=self._model,
-                reasoning_effort="none" if self._model.startswith("gpt-6-luna") else NOT_GIVEN,
+                reasoning_effort=_reasoning_effort(self._model),
                 messages=[
                     {
                         "role": "system",

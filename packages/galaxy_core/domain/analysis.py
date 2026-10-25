@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Protocol, runtime_checkable
+from typing import Any, ClassVar, Literal, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -14,6 +14,8 @@ class AnalysisResult:
     metrics: dict[str, Any]
     summary: str
     image_png: bytes | None = None
+    status: Literal["ok", "suspect", "unavailable"] = "ok"
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass

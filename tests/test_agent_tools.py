@@ -26,6 +26,7 @@ from packages.galaxy_agent.agent_tools import (
 from packages.galaxy_agent.context_registry import ContextRegistry
 from packages.galaxy_agent.models import AnalyzeRequest, Target
 from packages.galaxy_core.analyzer import BasicGalaxyAnalyzer
+from packages.galaxy_core.domain.models import SegmentationResult
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -281,10 +282,9 @@ def test_analyze_galaxy_returns_metrics_and_morphology_text(
 ) -> None:
     """analyze_galaxy reads both handles, runs analysis, stores metrics in registry."""
     fake_image = _fake_ndarray()
-    fake_seg = MagicMock()
-    fake_seg.mask = np.zeros((50, 50), dtype=np.uint8)
-    fake_seg.mask[10:40, 10:40] = 1
-    fake_seg.metadata = {}
+    mask = np.zeros((50, 50), dtype=np.uint8)
+    mask[10:40, 10:40] = 1
+    fake_seg = SegmentationResult(mask, {}, data_sub=fake_image)
 
     fake_ar = MagicMock()
     fake_ar.metrics = {"ellipticity": 0.3}
@@ -296,7 +296,7 @@ def test_analyze_galaxy_returns_metrics_and_morphology_text(
         "packages.galaxy_agent.agent_tools.tool_run_analysis", lambda *args, **kwargs: [fake_ar]
     )
     monkeypatch.setattr(
-        "packages.galaxy_agent.agent_tools._annotate_image_in_place", lambda *a: None
+        "packages.galaxy_agent.agent_tools._segmentation_overlay", lambda *a: b"png"
     )
 
     registry = ContextRegistry("req-analyze")
@@ -399,6 +399,14 @@ def test_generate_final_report_calls_langchain_backend(monkeypatch: pytest.Monke
     )
 
     registry = ContextRegistry("req-report")
+    registry.put(
+        "results:req-report",
+        {
+            "modules": {
+                name: {"status": "ok"} for name in ("cas", "sersic", "radial_profile", "isophotes")
+            }
+        },
+    )
     request = _make_request("req-report")
 
     tool = make_tool_generate_final_report(registry, fake_backend, request)
@@ -406,9 +414,9 @@ def test_generate_final_report_calls_langchain_backend(monkeypatch: pytest.Monke
         {"morphology_text": "Raw morphology text.", "object_info": "", "hst_jwst_info": ""}
     )
 
-    assert result["summary"] == "Final LLM summary."
+    assert "Final LLM summary." in result["summary"]
     fake_backend.generate_accompanying_summary.assert_called_once()
-    assert registry.get("summary:req-report") == "Final LLM summary."
+    assert "Final LLM summary." in registry.get("summary:req-report")
 
 
 def test_generate_final_report_uses_actual_viewer_survey_metadata() -> None:
@@ -417,6 +425,14 @@ def test_generate_final_report_uses_actual_viewer_survey_metadata() -> None:
     fake_backend.generate_accompanying_summary.return_value = "Final LLM summary."
 
     registry = ContextRegistry("req-ir-report")
+    registry.put(
+        "results:req-ir-report",
+        {
+            "modules": {
+                name: {"status": "ok"} for name in ("cas", "sersic", "radial_profile", "isophotes")
+            }
+        },
+    )
     registry.put(
         "coordinates:req-ir-report",
         {
@@ -442,6 +458,14 @@ def test_generate_final_report_uses_actual_viewer_survey_metadata() -> None:
 def test_generate_final_report_no_backend() -> None:
     """generate_final_report returns morphology_text as-is when no backend."""
     registry = ContextRegistry("req-nobackend")
+    registry.put(
+        "results:req-nobackend",
+        {
+            "modules": {
+                name: {"status": "ok"} for name in ("cas", "sersic", "radial_profile", "isophotes")
+            }
+        },
+    )
     request = _make_request("req-nobackend")
 
     tool = make_tool_generate_final_report(registry, None, request)

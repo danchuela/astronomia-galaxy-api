@@ -101,7 +101,7 @@ SDSS → DSS2 → GALEX → 2MASS → HiPS → SkyView (fallback)
 |------|-------------|
 | `resolve` | SESAME name resolution only — returns coordinates for the viewer, no analysis |
 | `segment` | SEP segmentation + contour overlay on the image |
-| `measure_basic` | Segmentation + photometry (area, centroid, ellipticity, intensity, CAS, Sérsic, radial profile, isophotes) |
+| `measure_basic` | Segmentation + exploratory intensity/geometry, CAS, radial profile, and isophotes (no calibrated photometry) |
 | `morphology_summary` | Full pipeline: segment + CAS + Sérsic + radial profile + isophotes + LLM narrative |
 | `cas` | CAS indices only |
 | `radial_profile` | Radial brightness profile only |

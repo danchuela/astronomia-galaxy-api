@@ -117,7 +117,7 @@ def build_galaxy_agent(
     GPT-6 Luna uses reasoning_effort="none" for Chat Completions tool-calling.
     The static system prompt enables OpenAI automatic prefix caching.
     """
-    resolved_model = model_name or os.getenv("AGENT_MODEL", "gpt-6-luna")
+    resolved_model = model_name or os.getenv("AGENT_MODEL") or "gpt-6-luna"
     llm = ChatOpenAI(
         model=resolved_model,
         temperature=0,

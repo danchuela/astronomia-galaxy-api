@@ -6,44 +6,63 @@ from typing import Any
 
 import numpy as np
 
+from packages.galaxy_core.domain.errors import NoSourceDetectedError
+from packages.galaxy_core.domain.models import SegmentationResult
+
 logger = logging.getLogger(__name__)
 
 
 def compute_sep_background(image: np.ndarray) -> tuple[np.ndarray, float]:
     """Background-subtract with SEP. Returns (data_sub, global_rms)."""
+    data_sub, _background, sigma = compute_sep_background_maps(image)
+    return data_sub, float(np.median(sigma))
+
+
+def compute_sep_background_maps(image: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Preserve the spatial background and background-only sigma maps."""
     import sep
 
+    if image.ndim != 2 or min(image.shape) < 4 or not np.isfinite(image).any():
+        raise ValueError("Expected a nonempty two-dimensional image with finite pixels")
     data = np.ascontiguousarray(image, dtype=np.float32)
-    # SEP requires native byte order; force copy if big-endian
-    if not data.dtype.isnative:
-        data = data.byteswap().newbyteorder()  # type: ignore[attr-defined]
+    invalid = ~np.isfinite(data)
+    safe_data = np.where(invalid, np.nanmedian(np.where(invalid, np.nan, data)), data)
     h, w = data.shape
     # Large boxes for extended sources — prevents subtracting galaxy flux
     bw = max(64, w // 4)
     bh = max(64, h // 4)
-    bkg = sep.Background(data, bw=bw, bh=bh)
-    data_sub = np.ascontiguousarray(data - bkg, dtype=np.float32)
-    return data_sub, float(bkg.globalrms)
+    bkg = sep.Background(np.ascontiguousarray(safe_data), mask=invalid, bw=bw, bh=bh)
+    background = np.asarray(bkg.back(), dtype=np.float32)
+    sigma = np.asarray(bkg.rms(), dtype=np.float32)
+    data_sub = np.ascontiguousarray(data - background, dtype=np.float32)
+    return data_sub, background, sigma
 
 
 def compute_sep_segmap(
-    data_sub: np.ndarray, rms: float, thresh: float = 2.0
+    data_sub: np.ndarray, rms: float | np.ndarray, thresh: float = 2.0
 ) -> tuple[Any, np.ndarray, np.ndarray, int]:
     """Detect sources with SEP; returns (objects, tight_segmap, grown_segmap, main_label)."""
     import sep
     from scipy.ndimage import binary_dilation
 
-    err = max(rms, 1e-6)
+    if not np.isfinite(thresh) or thresh <= 0:
+        raise ValueError("Detection threshold must be positive")
+    sigma = np.broadcast_to(np.asarray(rms, dtype=float), data_sub.shape)
+    invalid = ~np.isfinite(data_sub) | ~np.isfinite(sigma) | (sigma <= 0)
+    if invalid.all():
+        raise NoSourceDetectedError("No usable background noise estimate or source")
+    err = np.ascontiguousarray(np.where(invalid, 1.0, sigma), dtype=np.float32)
     objects, segmap = sep.extract(
-        data_sub,
+        np.ascontiguousarray(np.where(invalid, 0.0, data_sub), dtype=np.float32),
         thresh=thresh,
         err=err,
+        mask=invalid,
         segmentation_map=True,
         deblend_nthresh=32,
         deblend_cont=0.05,
     )
     if len(objects) == 0:
-        raise ValueError("SEP found no sources in the image")
+        raise NoSourceDetectedError("SEP found no sources in the image")
 
     h, w = data_sub.shape
     cy, cx = h / 2.0, w / 2.0
@@ -58,7 +77,9 @@ def compute_sep_segmap(
     main_mask = tight_segmap == main_label
     grow_thresh = 1.5 * err
     low_signal = data_sub > grow_thresh
-    grown_pixels = binary_dilation(main_mask, iterations=3) & low_signal & (tight_segmap <= 0)
+    grown_pixels = (
+        binary_dilation(main_mask, iterations=3) & low_signal & (tight_segmap <= 0) & ~invalid
+    )
     grown_segmap = tight_segmap.copy()
     grown_segmap[grown_pixels] = main_label
 
@@ -71,32 +92,92 @@ def compute_radial_profile(
     cx: float,
     cy: float,
     n_bins: int = 20,
+    *,
+    excluded_mask: np.ndarray | None = None,
+    noise_sigma: np.ndarray | None = None,
+    ellipticity: float = 0.0,
+    theta: float = 0.0,
 ) -> dict[str, list[float]]:
-    """Radial brightness profile: mean flux in concentric annuli; returns radii_px and mean_flux."""
+    """Mean background-subtracted intensity in annuli, excluding contaminating pixels."""
+    if not 4 <= n_bins <= 100:
+        raise ValueError("n_bins must be between 4 and 100")
     h, w = image.shape
     yy, xx = np.mgrid[0:h, 0:w]
-    radii_map = np.sqrt((xx.astype(float) - cx) ** 2 + (yy.astype(float) - cy) ** 2)
+    dx, dy = xx.astype(float) - cx, yy.astype(float) - cy
+    major = dx * np.cos(theta) + dy * np.sin(theta)
+    minor = -dx * np.sin(theta) + dy * np.cos(theta)
+    q = max(1.0 - float(ellipticity), 0.05)
+    radii_map = np.hypot(major, minor / q)
     r_max = float(radii_map[mask > 0].max()) if mask.sum() > 0 else float(radii_map.max())
     edges = np.linspace(0.0, r_max, n_bins + 1)
 
     radii_out: list[float] = []
     flux_out: list[float] = []
+    errors_out: list[float] = []
+    counts: list[float] = []
+    good = np.isfinite(image)
+    if excluded_mask is not None:
+        good &= ~excluded_mask
+    if noise_sigma is not None:
+        good &= np.isfinite(noise_sigma) & (noise_sigma > 0)
     for i in range(n_bins):
-        ring = (radii_map >= edges[i]) & (radii_map < edges[i + 1])
-        pixels = image[ring]
+        ring = (radii_map >= edges[i]) & (radii_map <= edges[i + 1])
+        if i:
+            ring &= radii_map > edges[i]
+        valid = ring & good
+        pixels = image[valid]
         if pixels.size > 0:
             radii_out.append(float((edges[i] + edges[i + 1]) / 2.0))
             flux_out.append(float(pixels.mean()))
+            counts.append(float(pixels.size))
+            if noise_sigma is not None:
+                errors_out.append(float(np.sqrt(np.square(noise_sigma[valid]).sum()) / pixels.size))
 
-    return {"radii_px": radii_out, "mean_flux": flux_out}
+    return {
+        "radii_px": radii_out,
+        "mean_flux": flux_out,
+        "mean_flux_err": errors_out,
+        "n_pixels": counts,
+    }
 
 
-def _make_gaussian_psf(fwhm: float = 2.0, size: int = 11) -> np.ndarray:
-    """Normalized synthetic Gaussian PSF for statmorph."""
-    sigma = fwhm / (2.0 * math.sqrt(2.0 * math.log(2.0)))
-    y, x = np.mgrid[-(size // 2) : (size // 2) + 1, -(size // 2) : (size // 2) + 1]
-    psf = np.exp(-(x**2 + y**2) / (2.0 * sigma**2)).astype(np.float64)
-    return psf / psf.sum()  # type: ignore[no-any-return]
+def compute_basic_measurements(
+    image: np.ndarray, segmentation: SegmentationResult
+) -> dict[str, Any]:
+    data = segmentation.data_sub if segmentation.data_sub is not None else image
+    valid = (segmentation.mask > 0) & ~segmentation.excluded_mask & np.isfinite(data)
+    if not valid.any() or float(data[valid].sum()) <= 0:
+        raise NoSourceDetectedError("The detected region has no positive measurable flux")
+    yy, xx = np.indices(data.shape, dtype=float)
+    weights = np.where(valid, np.maximum(data, 0), 0)
+    total = weights.sum()
+    cx, cy = float((weights * xx).sum() / total), float((weights * yy).sum() / total)
+    dx, dy = xx - cx, yy - cy
+    covariance = (
+        np.array(
+            [
+                [(weights * dx * dx).sum(), (weights * dx * dy).sum()],
+                [(weights * dx * dy).sum(), (weights * dy * dy).sum()],
+            ]
+        )
+        / total
+    )
+    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    ellipticity = (
+        float(1 - np.sqrt(max(eigenvalues[0], 0) / eigenvalues[1])) if eigenvalues[1] > 0 else None
+    )
+    vector = eigenvectors[:, 1]
+    return {
+        "area_pixels": float(valid.sum()),
+        "centroid_x": cx,
+        "centroid_y": cy,
+        "ellipticity": ellipticity,
+        "orientation_centroid": float(np.arctan2(vector[1], vector[0]) % np.pi),
+        "mean_intensity": float(data[valid].mean()),
+        "flux_sum": float(data[valid].sum()),
+        "intensity_unit": "input_intensity",
+        "analysis_reliable": False,
+    }
 
 
 def compute_statmorph_metrics(
@@ -104,38 +185,56 @@ def compute_statmorph_metrics(
     segmap_labels: np.ndarray,
     main_label: int,
     background_rms: float = 0.0,
+    *,
+    noise_sigma: np.ndarray | None = None,
+    excluded_mask: np.ndarray | None = None,
+    psf: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Full morphological metrics via statmorph: CAS, Sérsic, radial shape."""
     import statmorph
 
-    # Single-source segmap avoids the 'label' conflict in source_morphology 0.7.x
-    single_segmap = (segmap_labels == main_label).astype(np.int32)
-    psf = _make_gaussian_psf(fwhm=2.0)
-    # Inverse-variance weight map estimated from SEP background RMS
-    rms = max(background_rms, 1e-6)
-    weightmap = np.full(data_sub.shape, 1.0 / rms**2, dtype=np.float64)
-    source_morph = statmorph.source_morphology(
-        data_sub, single_segmap, psf=psf, weightmap=weightmap
+    sigma = (
+        np.asarray(noise_sigma, dtype=float)
+        if noise_sigma is not None
+        else np.full(data_sub.shape, background_rms, dtype=float)
     )
-    morph = source_morph[0]
+    if sigma.shape != data_sub.shape or not np.any(np.isfinite(sigma) & (sigma > 0)):
+        raise ValueError("A positive sigma image in input intensity units is required")
+    mask = ~np.isfinite(data_sub) | ~np.isfinite(sigma) | (sigma <= 0)
+    if excluded_mask is not None:
+        mask |= excluded_mask
+    if psf is not None:
+        psf = np.asarray(psf, dtype=float)
+        if psf.ndim != 2 or not np.isfinite(psf).all() or psf.sum() <= 0 or (psf < 0).any():
+            raise ValueError("Invalid PSF")
+        psf = psf / psf.sum()
+    morph = statmorph.SourceMorphology(
+        np.where(np.isfinite(data_sub), data_sub, 0.0),
+        segmap_labels,
+        main_label,
+        mask=mask,
+        psf=psf,
+        weightmap=np.where(mask, 0.0, sigma),
+    )
 
     def _safe(val: Any) -> float | None:
         try:
             v = float(val)
-            return None if (math.isnan(v) or math.isinf(v)) else v
+            return None if not math.isfinite(v) or v == -99.0 else v
         except (TypeError, ValueError):
             return None
 
-    sersic_ok = int(morph.flag_sersic) == 0
-    return {
+    morph_ok = int(morph.flag) < 2
+    sersic_ok = int(morph.flag_sersic) == 0 and morph_ok
+    result: dict[str, Any] = {
         "concentration": _safe(morph.concentration),
         "asymmetry": _safe(morph.asymmetry),
         "smoothness": _safe(morph.smoothness),
         "ellipticity_asymmetry": _safe(morph.ellipticity_asymmetry),
         "elongation_asymmetry": _safe(morph.elongation_asymmetry),
         "orientation_asymmetry": _safe(morph.orientation_asymmetry),
-        "centroid_x": _safe(morph.xc_asymmetry),
-        "centroid_y": _safe(morph.yc_asymmetry),
+        "asymmetry_center_x": _safe(morph.xc_asymmetry),
+        "asymmetry_center_y": _safe(morph.yc_asymmetry),
         "rpetro_circ": _safe(morph.rpetro_circ),
         "r20": _safe(morph.r20),
         "r80": _safe(morph.r80),
@@ -146,7 +245,27 @@ def compute_statmorph_metrics(
         "sersic_rhalf": _safe(morph.sersic_rhalf) if sersic_ok else None,
         "sersic_ellip": _safe(morph.sersic_ellip) if sersic_ok else None,
         "sersic_theta": _safe(morph.sersic_theta) if sersic_ok else None,
+        "sersic_amplitude": _safe(morph.sersic_amplitude) if sersic_ok else None,
+        "sersic_xc": _safe(morph.sersic_xc) if sersic_ok else None,
+        "sersic_yc": _safe(morph.sersic_yc) if sersic_ok else None,
+        "sersic_chi2_dof": _safe(morph.sersic_chi2_dof) if sersic_ok else None,
+        "sersic_psf_corrected": psf is not None,
     }
+    if not morph_ok:
+        for key in ("concentration", "asymmetry", "smoothness"):
+            result[key] = None
+    if sersic_ok:
+        # statmorph 0.7.2 fits on this stamp. Reuse its fitted callable, including its PSF.
+        stamp = morph._slice_stamp
+        data = data_sub[stamp]
+        yy, xx = np.indices(data.shape, dtype=float)
+        result["_sersic_diagnostic"] = {
+            "data": data,
+            "model": np.asarray(morph._sersic_model(xx, yy)),
+            "sigma": sigma[stamp],
+            "mask": (mask | ((segmap_labels > 0) & (segmap_labels != main_label)))[stamp],
+        }
+    return result
 
 
 def morphology_to_text(measurements: dict[str, Any]) -> str:
@@ -157,7 +276,7 @@ def morphology_to_text(measurements: dict[str, Any]) -> str:
 
     if frame_too_small:
         lines.append(
-            "The galaxy fills the entire field of view. Zoom in to isolate the galaxy"
+            "The galaxy fills the entire field of view. Zoom out to isolate the galaxy"
             " from the background for a reliable morphological analysis."
         )
 
@@ -188,3 +307,25 @@ def morphology_to_text(measurements: dict[str, Any]) -> str:
         lines.append(f"Ellipticity: {ellip:.3f}.")
 
     return " ".join(lines)
+
+
+def basic_measurements_to_text(measurements: dict[str, Any], lang: str = "es") -> str:
+    """Expose basic measurements in the report, not only in its JSON payload."""
+    area = measurements["area_pixels"]
+    cx, cy = measurements["centroid_x"], measurements["centroid_y"]
+    ellip = measurements["ellipticity"]
+    ellipticity = f"{ellip:.3f}" if ellip is not None else "N/A"
+    mean, total = measurements["mean_intensity"], measurements["flux_sum"]
+    if lang == "en":
+        return (
+            f"Segmented area: {area:.0f} px²; flux-weighted centroid (x, y): "
+            f"({cx:.2f}, {cy:.2f}) px; "
+            f"moment ellipticity: {ellipticity}. Mean background-subtracted intensity: {mean:.3f}; "
+            f"summed intensity: {total:.3f} (input image units, not calibrated photometry)."
+        )
+    return (
+        f"Área segmentada: {area:.0f} px²; centroide ponderado por intensidad (x, y): "
+        f"({cx:.2f}, {cy:.2f}) px; "
+        f"elipticidad por momentos: {ellipticity}. Intensidad media con fondo restado: {mean:.3f}; "
+        f"suma de intensidades: {total:.3f} (unidades de imagen, no fotometría calibrada)."
+    )
