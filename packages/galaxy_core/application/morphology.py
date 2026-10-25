@@ -307,3 +307,25 @@ def morphology_to_text(measurements: dict[str, Any]) -> str:
         lines.append(f"Ellipticity: {ellip:.3f}.")
 
     return " ".join(lines)
+
+
+def basic_measurements_to_text(measurements: dict[str, Any], lang: str = "es") -> str:
+    """Expose basic measurements in the report, not only in its JSON payload."""
+    area = measurements["area_pixels"]
+    cx, cy = measurements["centroid_x"], measurements["centroid_y"]
+    ellip = measurements["ellipticity"]
+    ellipticity = f"{ellip:.3f}" if ellip is not None else "N/A"
+    mean, total = measurements["mean_intensity"], measurements["flux_sum"]
+    if lang == "en":
+        return (
+            f"Segmented area: {area:.0f} px²; flux-weighted centroid (x, y): "
+            f"({cx:.2f}, {cy:.2f}) px; "
+            f"moment ellipticity: {ellipticity}. Mean background-subtracted intensity: {mean:.3f}; "
+            f"summed intensity: {total:.3f} (input image units, not calibrated photometry)."
+        )
+    return (
+        f"Área segmentada: {area:.0f} px²; centroide ponderado por intensidad (x, y): "
+        f"({cx:.2f}, {cy:.2f}) px; "
+        f"elipticidad por momentos: {ellipticity}. Intensidad media con fondo restado: {mean:.3f}; "
+        f"suma de intensidades: {total:.3f} (unidades de imagen, no fotometría calibrada)."
+    )

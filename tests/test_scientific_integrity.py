@@ -368,3 +368,44 @@ def test_real_tool_pipeline_preserves_input_and_reports_module_quality(tmp_path)
     assert payload["image_provenance"]["sha256"] == hashlib.sha256(original).hexdigest()
     assert all(name in payload["modules"] for name in ("cas", "sersic", "radial_profile"))
     assert (saved / "plot-segmentation.png").is_file()
+
+
+def test_segmentation_only_exposes_its_overlay_without_overwriting_the_input(tmp_path):
+    from packages.galaxy_agent.agent_tools import make_tool_segment_image
+    from packages.galaxy_agent.context_registry import ContextRegistry
+    from packages.galaxy_agent.models import AnalyzeRequest, Target
+
+    yy, xx = np.indices((128, 128))
+    image = 100 * np.exp(-((xx - 64) ** 2 + (yy - 64) ** 2) / 180)
+    image += np.random.default_rng(19).normal(0, 0.5, image.shape)
+    req = AnalyzeRequest(request_id="segment-only", target=Target(name="test"), task="segment")
+    registry = ContextRegistry(req.request_id)
+    registry.put(registry.image_handle(), image)
+    store = ArtifactStore(str(tmp_path))
+    original = store.save_image(req.request_id, b"untouched input")
+    make_tool_segment_image(registry, BasicGalaxyAnalyzer(), store, req).invoke(
+        {"image_handle": registry.image_handle()}
+    )
+    assert (tmp_path / req.request_id / "plot-segmentation.png").read_bytes().startswith(b"\x89PNG")
+    assert (tmp_path / req.request_id / "image.jpg").read_bytes() == b"untouched input"
+    assert original.type == "image"
+
+
+@pytest.mark.parametrize("lang,expected", [("es", "Área segmentada"), ("en", "Segmented area")])
+def test_basic_geometry_is_available_in_the_user_report(lang, expected):
+    from packages.galaxy_core.application.morphology import basic_measurements_to_text
+
+    text = basic_measurements_to_text(
+        {
+            "area_pixels": 123,
+            "centroid_x": 50.2,
+            "centroid_y": 40.3,
+            "ellipticity": 0.25,
+            "mean_intensity": 7.5,
+            "flux_sum": 922.5,
+        },
+        lang,
+    )
+    assert expected in text
+    for value in ("123", "50.20", "40.30", "0.250", "7.500", "922.500"):
+        assert value in text

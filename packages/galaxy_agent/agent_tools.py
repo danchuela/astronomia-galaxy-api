@@ -39,7 +39,10 @@ from packages.galaxy_agent.tools import (
 )
 from packages.galaxy_agent.view_integrity import validate_view_capture
 from packages.galaxy_core.analyzer import BasicGalaxyAnalyzer
-from packages.galaxy_core.application.morphology import compute_basic_measurements
+from packages.galaxy_core.application.morphology import (
+    basic_measurements_to_text,
+    compute_basic_measurements,
+)
 from packages.galaxy_core.application.resolve_and_fetch_service import resolve_and_fetch
 from packages.galaxy_core.domain import ResolvedTarget, SegmentationResult
 from packages.galaxy_core.domain.errors import TargetNotFoundError
@@ -508,6 +511,11 @@ def make_tool_segment_image(
             segmentation.mask.astype(np.uint8).tobytes(order="C")
         ).hexdigest()
         results.setdefault("modules", {})["segment"] = {"status": "ok", "warnings": []}
+        if request.task == "segment":
+            measurements = compute_basic_measurements(image, segmentation)
+            results["measurements"] = measurements
+            overlay = _segmentation_overlay(image, segmentation.mask, measurements)
+            artifacts.append(artifact_store.save_plot(request.request_id, "segmentation", overlay))
 
         handle = registry.seg_handle()
         registry.put(handle, segmentation)
@@ -574,6 +582,8 @@ def make_tool_analyze(
         basic = compute_basic_measurements(image, segmentation)
         for key, value in basic.items():
             merged_metrics.setdefault(key, value)
+        if task == "measure_basic":
+            summary_parts.insert(0, basic_measurements_to_text(merged_metrics, lang_of(request)))
 
         results = _get_results(registry)
         results["measurements"] = merged_metrics
