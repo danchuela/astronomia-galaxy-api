@@ -263,7 +263,7 @@ class LangChainBackend:
         last_user_text = current_message
 
         viewer_ctx: str | None = None
-        if request.view_ra_deg is not None and request.view_hips_id:
+        if not request.uploaded_image and request.view_ra_deg is not None and request.view_hips_id:
             viewer_ctx = (
                 f"{request.view_ra_deg:.4f}°, Dec {request.view_dec_deg:.4f}°, "
                 f"survey {request.view_hips_id}, campo {request.view_size_arcmin:.1f}'"

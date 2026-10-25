@@ -224,6 +224,9 @@ def test_language_parser_keeps_attachment_and_never_sends_its_bytes_to_model(mon
         request_id="parse",
         message="Dame CAS de esta imagen",
         uploaded_image=upload(fits_bytes(np.ones((32, 32)))),
+        view_ra_deg=120,
+        view_hips_id="DSS2",
+        view_metadata={"capture_required": True},
     )
     result = backend.enrich_request(request)
     assert (
@@ -234,6 +237,7 @@ def test_language_parser_keeps_attachment_and_never_sends_its_bytes_to_model(mon
     sent = backend._client.chat.completions.create.call_args.kwargs
     assert request.uploaded_image.data not in repr(sent)
     assert "IMAGEN ADJUNTA" in sent["messages"][0]["content"]
+    assert "VISTA DEL VISOR ACTIVA" not in sent["messages"][0]["content"]
 
 
 def test_only_supported_decoders_can_open_uploaded_bytes(monkeypatch):
