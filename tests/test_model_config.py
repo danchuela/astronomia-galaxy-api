@@ -1,8 +1,10 @@
+import json
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import httpx
 import pytest
-from openai import NOT_GIVEN
+from openai import OpenAI, omit
 
 from packages.galaxy_agent import galaxy_agent
 from packages.galaxy_agent.langchain_backend import LangChainBackend
@@ -41,7 +43,7 @@ def test_parser_and_summary_request_compatibility(
         if model == "gpt-6-luna":
             assert kwargs["reasoning_effort"] == "none"
         else:
-            assert kwargs["reasoning_effort"] is NOT_GIVEN
+            assert kwargs["reasoning_effort"] is omit
 
 
 @pytest.mark.parametrize("model", [None, "gpt-4.1"])
@@ -65,3 +67,60 @@ def test_parser_and_summary_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
     backend = LangChainBackend()
     assert backend._parse_model == backend._model == "gpt-6-luna"
+
+
+@pytest.mark.parametrize("model", ["gpt-6-luna", "gpt-4.1"])
+def test_sdk_serializes_optional_reasoning_on_the_wire(monkeypatch, model):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_PARSE_MODEL", model)
+    monkeypatch.setenv("OPENAI_MODEL", model)
+    sent = []
+
+    def respond(request):
+        sent.append(json.loads(request.content))
+        content = (
+            '{"name":"M51","task":"cas","can_fulfill":true}'
+            if len(sent) == 1
+            else "Mediciones disponibles."
+        )
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "created": 0,
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": content},
+                    }
+                ],
+            },
+        )
+
+    backend = LangChainBackend()
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        backend._client = OpenAI(
+            api_key="test-key", base_url="https://example.test/v1", http_client=http
+        )
+        backend.enrich_request(AnalyzeRequest(request_id="wire", message="CAS de M51"))
+        backend.generate_accompanying_summary("M51", "visible", "CAS: 1.25")
+        backend.generate_accompanying_summary("M51", "visible", "CAS: 1.25", lang="en")
+    assert len(sent) == 3
+    for body in sent:
+        assert body["model"] == model
+        if model.startswith("gpt-6-luna"):
+            assert body["reasoning_effort"] == "none"
+        else:
+            assert "reasoning_effort" not in body
+
+
+def test_empty_agent_model_environment_uses_the_default(monkeypatch):
+    monkeypatch.setenv("AGENT_MODEL", "")
+    llm = Mock()
+    monkeypatch.setattr(galaxy_agent, "ChatOpenAI", llm)
+    monkeypatch.setattr(galaxy_agent, "create_agent", Mock())
+    galaxy_agent.build_galaxy_agent([])
+    assert llm.call_args.kwargs["model"] == "gpt-6-luna"

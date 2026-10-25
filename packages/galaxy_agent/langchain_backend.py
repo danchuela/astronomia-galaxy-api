@@ -4,9 +4,9 @@ import json
 import logging
 import os
 import re
-from typing import Any
+from typing import Any, Literal
 
-from openai import NOT_GIVEN, OpenAI
+from openai import Omit, OpenAI, omit
 
 from packages.galaxy_agent.domain.models import Target, TaskType
 from packages.galaxy_agent.messages import lang_of
@@ -17,6 +17,10 @@ from packages.galaxy_core.domain.imaging import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _reasoning_effort(model: str) -> Literal["none"] | Omit:
+    return "none" if model.startswith("gpt-6-luna") else omit
 
 
 def _parse_bool(value: object, default: bool) -> bool:
@@ -281,7 +285,7 @@ class LangChainBackend:
 
         response = self._client.chat.completions.create(
             model=self._parse_model,
-            reasoning_effort="none" if self._parse_model.startswith("gpt-6-luna") else NOT_GIVEN,
+            reasoning_effort=_reasoning_effort(self._parse_model),
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -451,7 +455,7 @@ class LangChainBackend:
         try:
             resp = self._client.chat.completions.create(
                 model=self._model,
-                reasoning_effort="none" if self._model.startswith("gpt-6-luna") else NOT_GIVEN,
+                reasoning_effort=_reasoning_effort(self._model),
                 messages=[
                     {
                         "role": "system",
@@ -510,7 +514,7 @@ class LangChainBackend:
         try:
             resp = self._client.chat.completions.create(
                 model=self._model,
-                reasoning_effort="none" if self._model.startswith("gpt-6-luna") else NOT_GIVEN,
+                reasoning_effort=_reasoning_effort(self._model),
                 messages=[
                     {
                         "role": "system",
