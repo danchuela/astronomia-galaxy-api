@@ -234,3 +234,27 @@ def test_language_parser_keeps_attachment_and_never_sends_its_bytes_to_model(mon
     sent = backend._client.chat.completions.create.call_args.kwargs
     assert request.uploaded_image.data not in repr(sent)
     assert "IMAGEN ADJUNTA" in sent["messages"][0]["content"]
+
+
+def test_only_supported_decoders_can_open_uploaded_bytes(monkeypatch):
+    real_open = Image.open
+    formats_seen = []
+
+    def restricted_open(*args, **kwargs):
+        formats_seen.append(kwargs.get("formats"))
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(Image, "open", restricted_open)
+    with pytest.raises(UploadedImageError):
+        prepare_upload(
+            upload(b"#define x_width 32\n#define x_height 32\nstatic char x_bits[]={};", "fake.png")
+        )
+    assert formats_seen == [("PNG", "JPEG", "TIFF")]
+
+
+def test_multipage_tiff_is_rejected_without_scanning_all_pages():
+    buffer = io.BytesIO()
+    image = Image.new("L", (32, 32), 30)
+    image.save(buffer, format="TIFF", save_all=True, append_images=[image])
+    with pytest.raises(UploadedImageError, match="planes"):
+        prepare_upload(upload(buffer.getvalue(), "multiple.tiff"))

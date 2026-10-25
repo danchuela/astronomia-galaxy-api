@@ -14,6 +14,7 @@ import numpy as np
 from astropy.io import fits
 from astropy.io.fits.verify import VerifyError
 from PIL import Image, ImageOps
+from PIL.TiffImagePlugin import TiffImageFile
 from pydantic import BaseModel, Field, field_validator
 
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
@@ -143,7 +144,7 @@ def prepare_upload(upload: UploadedImage) -> PreparedUpload:
         else:
             with warnings.catch_warnings():
                 warnings.simplefilter("error", Image.DecompressionBombWarning)
-                with Image.open(io.BytesIO(raw)) as source:
+                with Image.open(io.BytesIO(raw), formats=("PNG", "JPEG", "TIFF")) as source:
                     image: Image.Image = source
                     expected = {
                         "png": "PNG",
@@ -155,7 +156,20 @@ def prepare_upload(upload: UploadedImage) -> PreparedUpload:
                     if image.format != expected:
                         raise UploadedImageError("invalid")
                     _check_shape((image.height, image.width))
-                    if getattr(image, "n_frames", 1) != 1:
+                    if isinstance(source, TiffImageFile) and source.tag_v2.get(259, 1) not in {
+                        1,
+                        5,
+                        7,
+                        8,
+                        32773,
+                        32946,
+                    }:
+                        raise UploadedImageError("invalid")
+                    try:
+                        image.seek(1)
+                    except EOFError:
+                        image.seek(0)
+                    else:
                         raise UploadedImageError("planes")
                     image = ImageOps.exif_transpose(image)
                     if image.mode in ("RGBA", "LA") or "transparency" in image.info:
