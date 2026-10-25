@@ -535,7 +535,8 @@ def make_tool_segment_image(
         Stores the SegmentationResult in the context registry for subsequent analysis tools.
         Returns seg_handle and mask statistics.
         """
-        image: np.ndarray = registry.get(image_handle)  # type: ignore[assignment]
+        # The current request owns its pixels; never trust an LLM-copied identifier.
+        image: np.ndarray = registry.get(registry.image_handle())  # type: ignore[assignment]
         opts = request.options or {}
         thresh_sigma = float(opts.get("thresh_sigma", 2.0))
 
@@ -590,8 +591,8 @@ def make_tool_analyze(
         their respective tools. Stores metrics in the registry.
         Returns metrics dict and morphology_text summary.
         """
-        image: np.ndarray = registry.get(image_handle)  # type: ignore[assignment]
-        segmentation: SegmentationResult = registry.get(seg_handle)  # type: ignore[assignment]
+        image: np.ndarray = registry.get(registry.image_handle())  # type: ignore[assignment]
+        segmentation: SegmentationResult = registry.get(registry.seg_handle())  # type: ignore[assignment]
         task = request.task or "measure_basic"
         opts = request.options or {}
         analysis_params = {k: opts[k] for k in ("n_bins",) if k in opts}
@@ -660,8 +661,8 @@ def make_tool_run_isophotes(
         or after segment_image (for task isophotes).
         Returns isophote_summary with axis ratios, position angles, and intensity profiles.
         """
-        image: np.ndarray = registry.get(image_handle)  # type: ignore[assignment]
-        segmentation: SegmentationResult = registry.get(seg_handle)  # type: ignore[assignment]
+        image: np.ndarray = registry.get(registry.image_handle())  # type: ignore[assignment]
+        segmentation: SegmentationResult = registry.get(registry.seg_handle())  # type: ignore[assignment]
         opts = request.options or {}
         target_name = (request.target and request.target.name) or "unknown"
         hips_id = opts.get("_resolved_hips_id") or request.view_hips_id

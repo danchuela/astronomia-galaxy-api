@@ -164,10 +164,11 @@ def test_uploaded_image_pipeline_never_fetches_catalogue_or_analyzes_preview(tmp
     fetched = make_tool_resolve_and_fetch_image(registry, store, req).invoke({})
     np.testing.assert_array_equal(registry.get(fetched["image_handle"]), data)
     seg = make_tool_segment_image(registry, analyzer, store, req).invoke(
-        {"image_handle": fetched["image_handle"]}
+        {"image_handle": "image:mistyped-by-model"}
     )
+    assert seg["seg_handle"] == registry.seg_handle()
     make_tool_analyze(registry, analyzer, store, req).invoke(
-        {"image_handle": fetched["image_handle"], "seg_handle": seg["seg_handle"]}
+        {"image_handle": "image:mistyped-by-model", "seg_handle": "seg:foreign-request"}
     )
     assert make_tool_enrich_metadata(registry, req).invoke({}) == {
         "object_info": "",
@@ -262,3 +263,14 @@ def test_multipage_tiff_is_rejected_without_scanning_all_pages():
     image.save(buffer, format="TIFF", save_all=True, append_images=[image])
     with pytest.raises(UploadedImageError, match="planes"):
         prepare_upload(upload(buffer.getvalue(), "multiple.tiff"))
+
+
+def test_tools_cannot_use_foreign_pixels_if_current_request_has_no_image(tmp_path):
+    registry = ContextRegistry("current-request")
+    registry.put("image:foreign-request", np.ones((32, 32)))
+    request = AnalyzeRequest(request_id="current-request", message="Segmenta")
+    tool = make_tool_segment_image(
+        registry, BasicGalaxyAnalyzer(), ArtifactStore(str(tmp_path)), request
+    )
+    with pytest.raises(KeyError, match="image:current-request"):
+        tool.invoke({"image_handle": "image:foreign-request"})
