@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from PIL import Image
 
 from apps.api.auth import verify_api_key
+from apps.api.body_limit import AnalysisBodyLimit
 from apps.api.config import Settings, get_settings
 from packages.galaxy_agent.agent_runner import AgentRunner
 from packages.galaxy_agent.logging_utils import setup_logging
@@ -39,6 +40,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="astronomIA Galaxy API", version="0.1.0", lifespan=lifespan)
+app.add_middleware(AnalysisBodyLimit)
 logger = logging.getLogger(__name__)
 
 

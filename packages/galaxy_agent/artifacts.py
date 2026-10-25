@@ -19,6 +19,8 @@ class ArtifactWriter(Protocol):
 
     def save_plot(self, request_id: str, plot_name: str, png_bytes: bytes) -> Artifact: ...
 
+    def save_original(self, request_id: str, data: bytes, extension: str) -> Artifact: ...
+
 
 class ArtifactStore:
     def __init__(self, base_dir: str = "artifacts") -> None:
@@ -57,6 +59,15 @@ class ArtifactStore:
         path = self._request_dir(request_id) / f"plot-{safe_name}.png"
         path.write_bytes(png_bytes)
         return Artifact(type="plot", path=self._relative(path))
+
+    def save_original(self, request_id: str, data: bytes, extension: str) -> Artifact:
+        if extension not in {"png", "jpg", "jpeg", "tif", "tiff", "fits", "fit", "fts"}:
+            raise ValueError("Invalid image format")
+        path = self._request_dir(request_id) / ("original." + extension)
+        if path.exists() and path.read_bytes() != data:
+            raise ValueError("The uploaded original is immutable")
+        path.write_bytes(data)
+        return Artifact(type="image", path=self._relative(path))
 
     def _relative(self, path: Path) -> str:
         try:

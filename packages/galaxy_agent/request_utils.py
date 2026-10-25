@@ -16,5 +16,7 @@ def last_user_message(request: AnalyzeRequest) -> str:
 def append_catalog_and_field(
     summary: str, catalog: str, size_arcmin: float, lang: str = "es"
 ) -> str:
+    if not catalog:
+        return summary
     base = summary.rstrip().rstrip(".")
     return f"{base}. {catalog_and_field(catalog, size_arcmin, lang)}"
