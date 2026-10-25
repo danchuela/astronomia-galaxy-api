@@ -51,6 +51,8 @@ Concurrent excess requests return HTTP 503 with `Retry-After: 3`; health and art
 downloads remain available. The BFF reports that another analysis is running, not
 that the module is broken. Production runs one Uvicorn worker. Increase workers
 only after measuring memory per process. This bounds admission, not execution time.
+Body reception is bounded to 15 seconds without data and 60 seconds total; an
+incomplete upload returns HTTP 408 and releases its capacity slot.
 
 Detection uses a bounded SEP active-pixel buffer (up to 300,000 pixels).
 An above-threshold pixel-count precheck rejects expensive fields before detection.

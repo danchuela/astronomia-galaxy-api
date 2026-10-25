@@ -240,3 +240,40 @@ def test_inspection_keeps_the_preview_available_when_detection_is_over_budget(mo
     result = inspect_image(upload())
     assert result["detection_status"] == "resource_limit" and result["sources"] == []
     assert result["preview"].startswith("data:image/png;base64,")
+
+
+@pytest.mark.parametrize("idle,total", [(0.01, 1.0), (1.0, 0.01)])
+def test_incomplete_upload_times_out_and_releases_the_scientific_slot(monkeypatch, idle, total):
+    from apps.api import body_limit
+
+    monkeypatch.setattr(body_limit, "BODY_IDLE_SECONDS", idle)
+    monkeypatch.setattr(body_limit, "BODY_TOTAL_SECONDS", total)
+
+    async def app(scope, receive, send):
+        await receive()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    wrapped = AnalysisCapacity(body_limit.AnalysisBodyLimit(app))
+
+    async def check():
+        messages = []
+
+        async def send(message):
+            messages.append(message)
+
+        async def incomplete():
+            await asyncio.sleep(3600)
+
+        async def complete():
+            return {"type": "http.request", "body": b"{}", "more_body": False}
+
+        scope = {"type": "http", "method": "POST", "path": "/images/inspect"}
+        await wrapped(scope, incomplete, send)
+        assert messages[0]["status"] == 408
+        assert wrapped._slots._value == 1
+        messages.clear()
+        await wrapped(scope, complete, send)
+        assert messages[0]["status"] == 200
+
+    asyncio.run(check())

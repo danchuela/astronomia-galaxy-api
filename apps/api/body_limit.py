@@ -1,9 +1,14 @@
 """Bound analysis JSON before parsing it, including requests sent without a length."""
 
+import asyncio
+from time import monotonic
+
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 MAX_BODY_BYTES = 12 * 1024 * 1024
+BODY_IDLE_SECONDS = 15.0
+BODY_TOTAL_SECONDS = 60.0
 
 
 class AnalysisBodyLimit:
@@ -20,8 +25,17 @@ class AnalysisBodyLimit:
             return
         chunks = []
         size = 0
+        deadline = monotonic() + BODY_TOTAL_SECONDS
         while True:
-            event = await receive()
+            try:
+                event = await asyncio.wait_for(
+                    receive(), timeout=max(0, min(BODY_IDLE_SECONDS, deadline - monotonic()))
+                )
+            except TimeoutError:
+                await JSONResponse({"detail": {"code": "upload_timeout"}}, status_code=408)(
+                    scope, receive, send
+                )
+                return
             if event["type"] == "http.disconnect":
                 return
             data = event.get("body", b"")
