@@ -7,6 +7,7 @@ from typing import Any
 from langchain_core.messages import HumanMessage
 
 from packages.galaxy_agent.agent_tools import build_agent_tools
+from packages.galaxy_agent.analysis_quality import build_analysis_quality, quality_summary
 from packages.galaxy_agent.artifacts import ArtifactStore
 from packages.galaxy_agent.context_registry import ContextRegistry
 from packages.galaxy_agent.galaxy_agent import build_galaxy_agent
@@ -23,7 +24,11 @@ from packages.galaxy_agent.messages import (
 from packages.galaxy_agent.models import AnalyzeRequest, AnalyzeResponse, Artifact, Provenance
 from packages.galaxy_agent.provenance_utils import build_provenance
 from packages.galaxy_core.analyzer import BasicGalaxyAnalyzer
-from packages.galaxy_core.domain.errors import TargetNotFoundError
+from packages.galaxy_core.domain.errors import (
+    ImageIntegrityError,
+    NoSourceDetectedError,
+    TargetNotFoundError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +128,44 @@ class TaskOrchestrator:
                 "warnings": [],
             }
             return
+        except (NoSourceDetectedError, ImageIntegrityError) as exc:
+            registry.clear()
+            capture_missing = isinstance(exc, ImageIntegrityError)
+            message = (
+                (
+                    "Open the viewer and wait for the field to load "
+                    "before requesting the analysis. "
+                    "I have not substituted a different image."
+                    if lang == "en"
+                    else "Abre el visor y espera a que cargue el campo antes de pedir el análisis. "
+                    "No he sustituido la captura por otra imagen."
+                )
+                if capture_missing
+                else (
+                    "I could not detect a measurable source in this field. "
+                    "Check the framing, zoom and survey before trying again."
+                    if lang == "en"
+                    else "No he detectado una fuente medible en este campo. "
+                    "Revisa el encuadre, el zoom y el survey antes de volver a intentarlo."
+                )
+            )
+            yield {"type": "summary", "summary": message}
+            quality = {
+                "status": "unavailable",
+                "reason": "capture_required" if capture_missing else "no_detection",
+            }
+            yield {
+                "type": "end",
+                "request_id": rid,
+                "status": "success",
+                "summary": message,
+                "results": {"quality": quality},
+                "analysis_quality": quality,
+                "artifacts": [],
+                "warnings": [],
+                "provenance": build_provenance(langsmith_enabled).model_dump(),
+            }
+            return
         except Exception as exc:
             logger.error(
                 "agent_run_error",
@@ -140,13 +183,27 @@ class TaskOrchestrator:
             except KeyError:
                 return None
 
-        summary: str = _safe_get(f"summary:{rid}") or ""
+        summary = str(_safe_get(f"summary:{rid}") or "")
         artifacts_list: list[Artifact] = _safe_get(f"artifacts:{rid}") or []
         results: dict[str, Any] = _safe_get(f"results:{rid}") or {}
         coordinates: dict[str, Any] | None = _safe_get(f"coordinates:{rid}")
         object_info: Any = _safe_get(f"object_info:{rid}")
         hst_jwst: Any = _safe_get(f"hst_jwst:{rid}")
         object_name = (request.target and request.target.name) or None
+
+        if request.task not in ("resolve", "fetch_image"):
+            quality = build_analysis_quality(results, request.task)
+            results["quality"] = quality
+            results["provenance"] = build_provenance(langsmith_enabled).model_dump()
+            if quality["status"] == "unavailable":
+                summary = quality_summary(quality, lang)
+            elif quality["status"] == "partial" and not summary.startswith(
+                quality_summary(quality, lang)
+            ):
+                summary = f"{quality_summary(quality, lang)}\n\n{summary}".strip()
+            elif not summary:
+                summary = quality_summary(quality, lang)
+            self.artifact_store.save_measurements(rid, results)
 
         if not summary:
             logger.warning(
@@ -216,6 +273,8 @@ class TaskOrchestrator:
             "provenance": response.provenance.model_dump(),
             "warnings": response.warnings,
         }
+        if "quality" in results:
+            end_event["analysis_quality"] = results["quality"]
         if coordinates:
             end_event["coordinates"] = coordinates
         if object_info:

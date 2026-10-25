@@ -44,6 +44,7 @@ class AnalyzeRequest(BaseModel):
     view_size_arcmin: float | None = None
     view_hips_id: str | None = None
     image_data: str | None = None
+    view_metadata: dict[str, Any] = Field(default_factory=dict)
     # Answer language resolved by the BFF ("es" | "en"); None means Spanish.
     answer_language: Literal["es", "en"] | None = None
 
@@ -89,6 +90,7 @@ class AnalyzeRequest(BaseModel):
             view_size_arcmin=self.view_size_arcmin,
             view_hips_id=self.view_hips_id,
             image_data=self.image_data,
+            view_metadata=self.view_metadata,
             answer_language=self.answer_language,
         )
 

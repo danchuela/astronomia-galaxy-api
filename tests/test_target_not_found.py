@@ -16,7 +16,11 @@ from packages.galaxy_agent.artifacts import ArtifactStore
 from packages.galaxy_agent.messages import target_not_found_message
 from packages.galaxy_agent.models import AnalyzeRequest, Target
 from packages.galaxy_agent.orchestrator import TaskOrchestrator
-from packages.galaxy_core.domain.errors import TargetNotFoundError
+from packages.galaxy_core.domain.errors import (
+    ImageIntegrityError,
+    NoSourceDetectedError,
+    TargetNotFoundError,
+)
 from packages.galaxy_core.infrastructure import sesame_client
 
 
@@ -153,6 +157,25 @@ def test_real_failure_is_still_an_error(monkeypatch, tmp_path, request_body):
     events = list(runner.run_stream(request_body))
     assert any(event["type"] == "error" for event in events)
     assert not any(event.get("status") == "success" for event in events)
+
+
+@pytest.mark.parametrize(
+    "failure,reason",
+    [
+        (NoSourceDetectedError("empty field"), "no_detection"),
+        (ImageIntegrityError("stale capture"), "capture_required"),
+    ],
+)
+def test_measurement_input_failure_is_a_clarification_not_an_outage(
+    monkeypatch, tmp_path, request_body, failure, reason
+):
+    runner = _runner(monkeypatch, tmp_path, failure)
+    req = request_body.model_copy(update={"task": "cas", "view_ra_deg": 12, "view_dec_deg": 20})
+    events = list(runner.run_stream(req))
+    assert [event["type"] for event in events] == ["summary", "end"]
+    assert events[-1]["status"] == "success"
+    assert events[-1]["analysis_quality"] == {"status": "unavailable", "reason": reason}
+    assert events[-1]["artifacts"] == []
 
 
 @pytest.mark.parametrize("route", ["/analyze", "/analyze/stream"])

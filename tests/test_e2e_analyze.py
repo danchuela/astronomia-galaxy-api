@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import io
 import json
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from apps.api.config import get_settings
 from apps.api.main import app, get_runner
@@ -94,13 +96,17 @@ def test_analyze_stream_contract(client: TestClient) -> None:
 
 
 @pytest.mark.parametrize(
-    ("filename", "route", "media_type", "payload"),
+    ("filename", "route", "media_type", "format"),
     [
-        ("image.jpg", "image", "image/jpeg", b"jpeg-contract-content"),
-        ("plot-cas.png", "plot/cas", "image/png", b"png-contract-content"),
+        ("image.jpg", "image", "image/jpeg", "JPEG"),
+        ("image.jpg", "image", "image/png", "PNG"),
+        ("plot-cas.png", "plot/cas", "image/png", "PNG"),
     ],
 )
-def test_artifact_contract(client, tmp_path, filename, route, media_type, payload) -> None:
+def test_artifact_contract(client, tmp_path, filename, route, media_type, format) -> None:
+    buffer = io.BytesIO()
+    Image.new("L", (12, 8), color=25).save(buffer, format=format)
+    payload = buffer.getvalue()
     folder = tmp_path / "contract-artifact"
     folder.mkdir()
     (folder / filename).write_bytes(payload)
