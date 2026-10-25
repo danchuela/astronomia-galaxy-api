@@ -163,6 +163,19 @@ class TaskOrchestrator:
                     else "No he detectado una fuente medible en la imagen adjunta. "
                     "Revisa la imagen y su encuadre."
                 )
+            if (
+                request.uploaded_image
+                and isinstance(exc, NoSourceDetectedError)
+                and (request.uploaded_image.source_point or request.uploaded_image.region)
+            ):
+                message = (
+                    "No measurable source was detected at the selected point or inside the region. "
+                    "Adjust the selection; no different source has been substituted."
+                    if lang == "en"
+                    else "No he detectado una fuente medible "
+                    "en el punto o la región seleccionados. "
+                    "Ajusta la selección; no he usado otra fuente en su lugar."
+                )
             yield {"type": "summary", "summary": message}
             quality = {
                 "status": "unavailable",

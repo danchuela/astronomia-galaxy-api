@@ -21,6 +21,7 @@ from langchain_core.tools import BaseTool, tool
 from packages.galaxy_agent.analysis_quality import build_analysis_quality, quality_summary
 from packages.galaxy_agent.artifacts import ArtifactWriter
 from packages.galaxy_agent.context_registry import ContextRegistry
+from packages.galaxy_agent.image_inspection import segmentation_inputs
 from packages.galaxy_agent.langchain_backend import format_metrics_spanish
 from packages.galaxy_agent.messages import (
     image_loaded_message,
@@ -384,6 +385,7 @@ def make_tool_resolve_and_fetch_image(
                 if isinstance(cached_upload, PreparedUpload)
                 else prepare_upload(request.uploaded_image)
             )
+            registry.put(f"upload:{rid}", prepared)
             artifacts.append(
                 artifact_store.save_original(rid, prepared.original, prepared.extension)
             )
@@ -540,7 +542,15 @@ def make_tool_segment_image(
         opts = request.options or {}
         thresh_sigma = float(opts.get("thresh_sigma", 2.0))
 
-        segmentation = tool_segment(analyzer, image, thresh_sigma=thresh_sigma)
+        if request.uploaded_image:
+            prepared: PreparedUpload = registry.get(f"upload:{registry.request_id}")  # type: ignore[assignment]
+            segmentation = analyzer.segment_galaxy(
+                image,
+                thresh_sigma=thresh_sigma,
+                **segmentation_inputs(request.uploaded_image, prepared),
+            )
+        else:
+            segmentation = tool_segment(analyzer, image, thresh_sigma=thresh_sigma)
 
         artifacts = _get_artifacts(registry)
         artifacts.append(artifact_store.save_mask(request.request_id, segmentation.mask))
@@ -596,6 +606,8 @@ def make_tool_analyze(
         task = request.task or "measure_basic"
         opts = request.options or {}
         analysis_params = {k: opts[k] for k in ("n_bins",) if k in opts}
+        if request.uploaded_image:
+            analysis_params["uncertainty_samples"] = request.uploaded_image.uncertainty_samples
 
         analysis_results = tool_run_analysis(
             analyzer, image, segmentation, str(task), params=analysis_params or None
@@ -618,6 +630,28 @@ def make_tool_analyze(
                 "status": status if isinstance(status, str) else "ok",
                 "warnings": ar.warnings if isinstance(ar.warnings, list) else [],
             }
+
+        if analysis_params.get("uncertainty_samples") and task in (
+            "cas",
+            "sersic",
+            "morphology_summary",
+            "measure_basic",
+        ):
+            from packages.galaxy_core.application.uncertainty import estimate_noise_stability
+
+            stability = estimate_noise_stability(segmentation)
+            merged_metrics["noise_stability"] = stability
+            _get_results(registry)["noise_stability"] = stability
+            if stability["intervals"]:
+                label = (
+                    "Estabilidad frente al ruido (16 realizaciones; no son errores totales)"
+                    if lang_of(request) == "es"
+                    else "Noise stability (16 realizations; not total uncertainties)"
+                )
+                rows = [
+                    f"{key}: σ={value['std']:.4g}" for key, value in stability["intervals"].items()
+                ]
+                summary_parts.append(label + ": " + "; ".join(rows) + ".")
 
         basic = compute_basic_measurements(image, segmentation)
         for key, value in basic.items():

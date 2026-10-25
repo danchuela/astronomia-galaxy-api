@@ -27,17 +27,27 @@ def build_analysis_quality(results: dict[str, Any], task: str | None) -> dict[st
         status = "partial" if available else "unavailable"
     provenance = results.get("image_provenance", {})
     native_fits = provenance.get("input_kind") == "fits"
+    supplied_sigma = provenance.get("noise_model") == "user_sigma"
+    supplied_psf = provenance.get("psf") == "user_supplied"
+    stability = results.get("noise_stability", {})
+    has_stability = stability.get("status") == "available"
     issues = [
         "unverified_calibration" if native_fits else "rendered_image",
-        "background_noise_only",
-        "unknown_psf",
-        "no_parameter_uncertainties",
     ]
+    if not supplied_sigma:
+        issues.append("background_noise_only")
+    if not supplied_psf:
+        issues.append("unknown_psf")
+    issues.append("conditional_noise_stability" if has_stability else "no_parameter_uncertainties")
     segmentation = results.get("segmentation_metadata", {})
     if segmentation.get("touches_boundary"):
         issues.append("source_touches_boundary")
     if segmentation.get("n_sources", 0) > 1:
         issues.append("multiple_sources")
+    if segmentation.get("selection_method") == "user_point":
+        issues.append("user_selected_source")
+    if segmentation.get("region_applied"):
+        issues.append("user_selected_region")
     if any(state == "suspect" for state in modules.values()):
         issues.append("suspect_measurement")
     return {
@@ -45,8 +55,9 @@ def build_analysis_quality(results: dict[str, Any], task: str | None) -> dict[st
         "input_kind": "fits" if native_fits else "rendered",
         "source": provenance.get("source", "viewer"),
         "calibrated": False,
-        "psf": "not_supplied",
-        "uncertainty": "background_only",
+        "psf": "user_supplied" if supplied_psf else "not_supplied",
+        "uncertainty": "user_sigma" if supplied_sigma else "background_only",
+        "noise_stability": stability,
         "issues": issues,
         "modules": modules,
     }

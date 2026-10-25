@@ -24,7 +24,7 @@ def compute_sep_background_maps(image: np.ndarray) -> tuple[np.ndarray, np.ndarr
 
     if image.ndim != 2 or min(image.shape) < 4 or not np.isfinite(image).any():
         raise ValueError("Expected a nonempty two-dimensional image with finite pixels")
-    data = np.ascontiguousarray(image, dtype=np.float32)
+    data = np.ascontiguousarray(image, dtype=np.float64)
     invalid = ~np.isfinite(data)
     safe_data = np.where(invalid, np.nanmedian(np.where(invalid, np.nan, data)), data)
     h, w = data.shape
@@ -32,14 +32,19 @@ def compute_sep_background_maps(image: np.ndarray) -> tuple[np.ndarray, np.ndarr
     bw = max(64, w // 4)
     bh = max(64, h // 4)
     bkg = sep.Background(np.ascontiguousarray(safe_data), mask=invalid, bw=bw, bh=bh)
-    background = np.asarray(bkg.back(), dtype=np.float32)
-    sigma = np.asarray(bkg.rms(), dtype=np.float32)
-    data_sub = np.ascontiguousarray(data - background, dtype=np.float32)
+    background = np.asarray(bkg.back(), dtype=np.float64)
+    sigma = np.asarray(bkg.rms(), dtype=np.float64)
+    data_sub = np.ascontiguousarray(data - background, dtype=np.float64)
     return data_sub, background, sigma
 
 
 def compute_sep_segmap(
-    data_sub: np.ndarray, rms: float | np.ndarray, thresh: float = 2.0
+    data_sub: np.ndarray,
+    rms: float | np.ndarray,
+    thresh: float = 2.0,
+    *,
+    source_point: tuple[float, float] | None = None,
+    excluded_mask: np.ndarray | None = None,
 ) -> tuple[Any, np.ndarray, np.ndarray, int]:
     """Detect sources with SEP; returns (objects, tight_segmap, grown_segmap, main_label)."""
     import sep
@@ -49,6 +54,8 @@ def compute_sep_segmap(
         raise ValueError("Detection threshold must be positive")
     sigma = np.broadcast_to(np.asarray(rms, dtype=float), data_sub.shape)
     invalid = ~np.isfinite(data_sub) | ~np.isfinite(sigma) | (sigma <= 0)
+    if excluded_mask is not None:
+        invalid |= excluded_mask
     if invalid.all():
         raise NoSourceDetectedError("No usable background noise estimate or source")
     err = np.ascontiguousarray(np.where(invalid, 1.0, sigma), dtype=np.float32)
@@ -69,6 +76,14 @@ def compute_sep_segmap(
     dist2 = (objects["x"] - cx) ** 2 + (objects["y"] - cy) ** 2
     score = objects["npix"].astype(float) / (dist2 + 1.0)
     main_idx = int(np.argmax(score))
+    if source_point is not None:
+        x, y = source_point
+        if not (np.isfinite(x) and np.isfinite(y) and 0 <= x < w and 0 <= y < h):
+            raise NoSourceDetectedError("Selected point is outside the image")
+        label = int(segmap[min(h - 1, int(round(y))), min(w - 1, int(round(x)))])
+        if label <= 0:
+            raise NoSourceDetectedError("No detected source at the selected point")
+        main_idx = label - 1
     main_label = main_idx + 1  # SEP labels start at 1
 
     tight_segmap = segmap.astype(np.int32)
