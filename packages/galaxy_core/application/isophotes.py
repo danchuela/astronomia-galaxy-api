@@ -36,6 +36,7 @@ def _survey_warning(hips_id: str | None, lang: str = "es") -> str | None:
 
 def _contour_levels(image: np.ndarray, mask: np.ndarray, n_levels: int = 8) -> list[float]:
     pixels = image[mask > 0] if mask.sum() > 0 else image.ravel()
+    pixels = pixels[np.isfinite(pixels)]
     if pixels.size == 0:
         return []
     low = float(np.percentile(pixels, 15))
@@ -93,11 +94,15 @@ def _fit_ellipses(
     pa: float,
     r_start: float,
     maxsma: float,
-) -> list[dict[str, float]]:
+    excluded_mask: np.ndarray | None = None,
+) -> list[dict[str, Any]]:
     """Fit elliptical isophotes with photutils. Returns a list of per-isophote parameter dicts."""
     from photutils.isophote import Ellipse, EllipseGeometry
 
-    img_fit = np.ascontiguousarray(np.clip(image, 0.0, None), dtype=np.float64)
+    invalid = ~np.isfinite(image)
+    if excluded_mask is not None:
+        invalid |= excluded_mask
+    img_fit = np.ma.array(np.asarray(image, dtype=np.float64), mask=invalid)
 
     attempts = [
         {"sclip": 3.0, "n_clip": 2, "step": 0.2, "fix_center": True, "eps": ellip, "pa": pa},
@@ -122,17 +127,32 @@ def _fit_ellipses(
             if result is not None and len(result) >= 3:
                 table = []
                 for iso in result:
+                    if (
+                        not iso.valid
+                        or not np.isfinite([iso.sma, iso.intens, iso.eps, iso.pa]).all()
+                    ):
+                        continue
+
+                    def error(name: str, iso: Any = iso) -> float | None:
+                        value = getattr(iso, name, None)
+                        return float(value) if value is not None and np.isfinite(value) else None
+
                     table.append(
                         {
-                            "sma": round(float(iso.sma), 2),
-                            "intens": round(float(iso.intens), 4),
-                            "ellip": round(float(iso.eps), 4),
-                            "pa_deg": round(float(np.degrees(iso.pa)), 2),
-                            "x0": round(float(iso.x0), 2),
-                            "y0": round(float(iso.y0), 2),
+                            "sma": float(iso.sma),
+                            "intens": float(iso.intens),
+                            "ellip": float(iso.eps),
+                            "pa_deg": float(np.degrees(iso.pa)),
+                            "x0": float(iso.x0),
+                            "y0": float(iso.y0),
+                            "intens_err": error("int_err"),
+                            "ellip_err": error("ellip_err"),
+                            "pa_err_rad": error("pa_err"),
+                            "stop_code": int(iso.stop_code),
                         }
                     )
-                return table
+                if len(table) >= 3:
+                    return table
         except Exception:
             if i == len(attempts) - 1:
                 logger.warning("photutils isophote fitting failed on all attempts", exc_info=True)
@@ -146,12 +166,15 @@ def compute_isophotes(
     measurements: dict[str, Any],
     n_iso: int = 8,
     hips_id: str | None = None,
-) -> tuple[list[dict[str, float]], bytes]:
+    excluded_mask: np.ndarray | None = None,
+) -> tuple[list[dict[str, Any]], bytes]:
     """Fit elliptical isophotes and render pixel-traced contours; returns (table, png_bytes)."""
     from PIL import Image as PILImage
     from PIL import ImageDraw
     from scipy.ndimage import gaussian_filter
 
+    if not 3 <= n_iso <= 32:
+        raise ValueError("n_iso must be between 3 and 32")
     h, w = image.shape
     if h < 4 or w < 4:
         img_u8 = ((np.clip(image, 0, None) / max(float(image.max()), 1e-9)) * 255).astype(np.uint8)
@@ -159,17 +182,20 @@ def compute_isophotes(
         PILImage.fromarray(img_u8).convert("RGB").save(buf, format="PNG")
         return [], buf.getvalue()
 
-    cx = float(measurements.get("centroid_x", w / 2))
-    cy = float(measurements.get("centroid_y", h / 2))
+    center_x, center_y = measurements.get("centroid_x"), measurements.get("centroid_y")
+    cx = float(center_x if center_x is not None else w / 2)
+    cy = float(center_y if center_y is not None else h / 2)
     indices = np.argwhere(mask > 0)
     if not (0 < cx < w and 0 < cy < h) and indices.size > 0:
         cy = float(indices[:, 0].mean())
         cx = float(indices[:, 1].mean())
 
-    ellip = float(measurements.get("ellipticity", 0.2))
+    ellip = float(
+        measurements.get("ellipticity") or measurements.get("ellipticity_asymmetry") or 0.0
+    )
     ellip = min(max(ellip, 0.0), 0.85)
 
-    rpetro = float(measurements.get("rpetro_circ", min(h, w) * 0.3))
+    rpetro = float(measurements.get("rpetro_circ") or min(h, w) * 0.3)
     if not np.isfinite(rpetro) or rpetro <= 0:
         rpetro = min(h, w) * 0.3
     rpetro = min(rpetro, 0.45 * min(h, w))
@@ -177,51 +203,32 @@ def compute_isophotes(
     maxsma = min(rpetro * 1.1, 0.42 * min(h, w))
     maxsma = max(maxsma, r_start * 2)
 
-    pa = float(measurements.get("orientation_asymmetry", 0.0))
+    pa = float(
+        measurements.get("orientation_centroid") or measurements.get("orientation_asymmetry") or 0.0
+    )
 
-    iso_table = _fit_ellipses(image, cx, cy, ellip, pa, r_start, maxsma)
+    iso_table = _fit_ellipses(image, cx, cy, ellip, pa, r_start, maxsma, excluded_mask)
 
-    img_clipped = np.clip(image, 0.0, None)
+    img_clipped = np.maximum(np.where(np.isfinite(image), image, 0.0), 0.0)
     img_min, img_max = float(img_clipped.min()), float(img_clipped.max())
     scale = 255.0 / (img_max - img_min + 1e-9)
     img_u8 = ((img_clipped - img_min) * scale).astype(np.uint8)
     img_rgb = PILImage.fromarray(img_u8).convert("RGB")
     draw = ImageDraw.Draw(img_rgb)
 
-    # Light smoothing removes pixel-level noise before contouring
-    smooth = gaussian_filter(img_clipped.astype(np.float64), sigma=2.0)
+    # Masked smoothing prevents detected neighbors from contributing contours.
+    valid = np.isfinite(image)
+    if excluded_mask is not None:
+        valid &= ~excluded_mask
+    numerator = gaussian_filter(np.where(valid, img_clipped, 0.0), sigma=2.0)
+    denominator = gaussian_filter(valid.astype(float), sigma=2.0)
+    smooth = np.divide(
+        numerator, denominator, out=np.full_like(numerator, np.nan), where=denominator > 0
+    )
+    smooth[~valid] = np.nan
     levels = _contour_levels(smooth, mask, n_iso)
     max_radius = max(maxsma * 1.5, min(h, w) * 0.45)
-    drawn = _draw_contours(draw, smooth, levels, cx, cy, max_radius)
-
-    if drawn == 0:
-        try:
-            from scipy.ndimage import binary_closing
-            from scipy.ndimage import label as scipy_label
-            from skimage.measure import find_contours as _find_contours
-
-            closed = binary_closing(mask.astype(bool), iterations=3)
-            smooth_mask = gaussian_filter(closed.astype(float), sigma=3.0)
-            if smooth_mask.shape[0] < 2 or smooth_mask.shape[1] < 2:
-                raise ValueError("mask too small for contour fallback")
-            labeled, n_comp = scipy_label(smooth_mask > 0.4)
-            if n_comp > 1:
-                cix = max(0, min(int(round(cx)), w - 1))
-                ciy = max(0, min(int(round(cy)), h - 1))
-                main_lbl = labeled[ciy, cix]
-                if main_lbl > 0:
-                    smooth_mask = smooth_mask * (labeled == main_lbl)
-                else:
-                    sizes = [int(np.sum(labeled == i)) for i in range(1, n_comp + 1)]
-                    smooth_mask = smooth_mask * (labeled == (int(np.argmax(sizes)) + 1))
-            for contour in _find_contours(smooth_mask, level=0.5):  # type: ignore[no-untyped-call]
-                if len(contour) < 15:
-                    continue
-                pts = [(float(c[1]), float(c[0])) for c in contour]
-                pts.append(pts[0])
-                draw.line(pts, fill=(0, 220, 100), width=2)
-        except Exception:
-            logger.debug("isophotes_contour_fallback_failed", exc_info=True)
+    _draw_contours(draw, smooth, levels, cx, cy, max_radius)
 
     r = max(4, min(12, w // 30))
     draw.line([(int(cx) - r, int(cy)), (int(cx) + r, int(cy))], fill=(255, 130, 0), width=2)
@@ -233,7 +240,7 @@ def compute_isophotes(
 
 
 def format_isophotes_summary(
-    iso_table: list[dict[str, float]],
+    iso_table: list[dict[str, Any]],
     target_name: str,
     hips_id: str | None = None,
     lang: str = "es",
@@ -241,16 +248,16 @@ def format_isophotes_summary(
     warn = _survey_warning(hips_id, lang)
     if not iso_table and lang == "en":
         base = (
-            f"Isointensity contours traced for {target_name}. "
-            "The elliptical fit did not converge; the image shows the real brightness "
-            "contours of the galaxy."
+            f"Isointensity contours visualization for {target_name}. "
+            "No valid elliptical isophote fit is available. "
+            "Any displayed contours are smoothed intensity contours, not fitted ellipses."
         )
         return f"{base}\n\n{warn}" if warn else base
     if not iso_table:
         base = (
-            f"Contornos de isointensidad trazados para {target_name}. "
-            "El ajuste elíptico no convergió; la imagen muestra los contornos reales "
-            "de brillo de la galaxia."
+            f"Visualización de isointensidad para {target_name}. "
+            "No hay un ajuste elíptico válido. Los contornos que puedan mostrarse son "
+            "de intensidad suavizada, no elipses ajustadas."
         )
         return f"{base}\n\n{warn}" if warn else base
 
@@ -261,15 +268,15 @@ def format_isophotes_summary(
             f"Isophotes for {target_name}: {len(iso_table)} fitted ellipses "
             f"(sma={innermost['sma']:.1f}–{outermost['sma']:.1f} px, "
             f"mean ellipticity {sum(r['ellip'] for r in iso_table) / len(iso_table):.3f}). "
-            "The image shows real isointensity contours that trace the shape "
-            "of the galaxy, including spiral arms and irregular structure."
+            "The visualization shows smoothed intensity contours, "
+            "distinct from the fitted ellipses."
         )
         return f"{base}\n\n{warn}" if warn else base
     base = (
         f"Isofotas para {target_name}: {len(iso_table)} elipses ajustadas "
         f"(sma={innermost['sma']:.1f}–{outermost['sma']:.1f} px, "
         f"elipticidad media {sum(r['ellip'] for r in iso_table) / len(iso_table):.3f}). "
-        "La imagen muestra contornos de isointensidad reales que trazan la forma "
-        "de la galaxia incluyendo brazos espirales y estructura irregular."
+        "La visualización muestra contornos de intensidad suavizada, "
+        "distintos de las elipses ajustadas."
     )
     return f"{base}\n\n{warn}" if warn else base

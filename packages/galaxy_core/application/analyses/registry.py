@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 
 from packages.galaxy_core.domain.analysis import (
@@ -8,6 +10,8 @@ from packages.galaxy_core.domain.analysis import (
     GalaxyAnalysisModule,
 )
 from packages.galaxy_core.domain.models import SegmentationResult
+
+logger = logging.getLogger(__name__)
 
 
 class AnalysisRegistry:
@@ -29,9 +33,23 @@ class AnalysisRegistry:
         results: list[AnalysisResult] = []
         for name in names:
             module = self._modules.get(name)
-            if module is not None:
+            if module is None:
+                raise ValueError(f"Unknown analysis module: {name}")
+            try:
                 results.append(module.run(ctx))
+            except Exception:
+                logger.exception("analysis_module_failed", extra={"module": name})
+                results.append(
+                    AnalysisResult(
+                        module_name=name,
+                        metrics={},
+                        summary=f"{name}: measurement unavailable.",
+                        status="unavailable",
+                        warnings=["measurement_failed"],
+                    )
+                )
         return results
+
 
 def default_registry() -> AnalysisRegistry:
     """Build the registry with all standard analysis modules registered."""

@@ -31,6 +31,9 @@ def get_statmorph(ctx: AnalysisContext) -> dict[str, Any]:
                 statmorph_segmap,
                 seg.main_label,
                 background_rms=rms,
+                noise_sigma=seg.noise_sigma,
+                excluded_mask=seg.excluded_mask,
+                psf=seg.psf,
             )
         except Exception as exc:
             logger.warning("statmorph_failed_in_module", extra={"error": str(exc)}, exc_info=True)

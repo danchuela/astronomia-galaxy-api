@@ -22,11 +22,23 @@ class CASAnalysis:
             "flag": sm.get("flag"),
         }
         image_png = _plot_cas(metrics)
+        valid = metrics["concentration"] is not None
         return AnalysisResult(
             module_name=self.name,
             metrics=metrics,
             summary=_cas_summary(metrics),
             image_png=image_png,
+            status=(
+                "unavailable"
+                if not valid
+                else (
+                    "suspect"
+                    if metrics["flag"]
+                    or any(metrics[k] is None for k in ("asymmetry", "smoothness"))
+                    else "ok"
+                )
+            ),
+            warnings=[] if valid else ["invalid_statmorph_measurement"],
         )
 
 
@@ -50,7 +62,6 @@ def _plot_cas(m: dict[str, Any]) -> bytes | None:
 
     labels = ["Concentration (C)", "Asymmetry (A)", "Smoothness (S)"]
     keys = ["concentration", "asymmetry", "smoothness"]
-    ref_ranges = [(2.0, 5.5), (0.0, 0.6), (0.0, 0.5)]
     values = [m.get(k) for k in keys]
 
     if all(v is None for v in values):
@@ -63,8 +74,7 @@ def _plot_cas(m: dict[str, Any]) -> bytes | None:
     colors = ["#38bdf8", "#f59e0b", "#a78bfa"]
     y_pos = np.arange(len(labels))
 
-    for i, (val, (rmin, rmax), color) in enumerate(zip(values, ref_ranges, colors, strict=False)):
-        ax.barh(i, rmax - rmin, left=rmin, height=0.4, color=color, alpha=0.15)
+    for i, (val, color) in enumerate(zip(values, colors, strict=True)):
         if val is not None:
             ax.barh(i, val, height=0.55, color=color, alpha=0.85)
             ax.text(
@@ -85,7 +95,8 @@ def _plot_cas(m: dict[str, Any]) -> bytes | None:
     ax.tick_params(colors="white")
     for spine in ax.spines.values():
         spine.set_edgecolor("#475569")
-    ax.set_xlim(0, 6.5)
+    finite_values = [float(value) for value in values if value is not None]
+    ax.set_xlim(min([0.0, *finite_values]) - 0.2, max([5.5, *finite_values]) + 0.6)
     ax.grid(axis="x", alpha=0.2, color="#475569")
 
     buf = io.BytesIO()

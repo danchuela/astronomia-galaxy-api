@@ -9,13 +9,16 @@ The LLM passes these handle strings between tool calls to chain the pipeline.
 from __future__ import annotations
 
 import base64
+import hashlib
 import logging
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import requests as _http
 from langchain_core.tools import BaseTool, tool
 
+from packages.galaxy_agent.analysis_quality import build_analysis_quality, quality_summary
 from packages.galaxy_agent.artifacts import ArtifactWriter
 from packages.galaxy_agent.context_registry import ContextRegistry
 from packages.galaxy_agent.messages import (
@@ -34,7 +37,9 @@ from packages.galaxy_agent.tools import (
     tool_run_analysis,
     tool_segment,
 )
+from packages.galaxy_agent.view_integrity import validate_view_capture
 from packages.galaxy_core.analyzer import BasicGalaxyAnalyzer
+from packages.galaxy_core.application.morphology import compute_basic_measurements
 from packages.galaxy_core.application.resolve_and_fetch_service import resolve_and_fetch
 from packages.galaxy_core.domain import ResolvedTarget, SegmentationResult
 from packages.galaxy_core.domain.errors import TargetNotFoundError
@@ -228,15 +233,13 @@ def _download_image(
     return artifact_store.save_image(request_id, resp.content).path
 
 
-def _annotate_image_in_place(
-    image_path: str,
+def _segmentation_overlay(
     image: Any,
     mask: Any,
     measurements: dict[str, Any],
-) -> None:
-    """Overwrite the saved image with segmentation contour and centroid marker."""
+) -> bytes:
+    """Create a separate overlay; the original input pixels remain immutable."""
     import io
-    from pathlib import Path
 
     from PIL import Image as PILImage
     from PIL import ImageDraw
@@ -269,8 +272,8 @@ def _annotate_image_in_place(
     draw.line([(cx, cy - r), (cx, cy + r)], fill=(255, 130, 0), width=2)
 
     buf = io.BytesIO()
-    img_rgb.save(buf, format="JPEG", quality=92)
-    Path(image_path).write_bytes(buf.getvalue())
+    img_rgb.save(buf, format="PNG")
+    return buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +388,7 @@ def make_tool_resolve_and_fetch_image(
                 "dec_deg": resolved.dec_deg,
             }
 
+        validate_view_capture(request)
         if has_viewer and request.image_data:
             raw = request.image_data
             if "," in raw:
@@ -436,6 +440,28 @@ def make_tool_resolve_and_fetch_image(
             }
 
         image_array = load_image(image_path)
+        validate_view_capture(request, image_array.shape)
+        original = Path(image_path)
+        input_provenance = {
+            "input_kind": "rendered",
+            "calibrated": False,
+            "shape": list(image_array.shape),
+            "psf": "not_supplied",
+            "grayscale_conversion": "Pillow luminance for RGB; native precision for grayscale",
+            "coordinates": coordinates,
+            "viewer_capture": request.view_metadata,
+        }
+        if original.is_file():
+            input_provenance["sha256"] = hashlib.sha256(original.read_bytes()).hexdigest()
+        _get_results(registry)["image_provenance"] = input_provenance
+        _get_results(registry)["analysis_parameters"] = {
+            "task": request.task,
+            "thresh_sigma": opts.get("thresh_sigma", 2.0),
+            "n_bins": opts.get("n_bins", 25),
+            "n_iso": opts.get("n_iso", 8),
+            "background_mesh": "max(64, dimension // 4)",
+            "source_selection": "area / (center_distance_squared + 1)",
+        }
         handle = registry.image_handle()
         registry.put(handle, image_array)
         registry.put(_image_path_key(rid), image_path)
@@ -478,6 +504,10 @@ def make_tool_segment_image(
 
         results = _get_results(registry)
         results["segmentation_metadata"] = segmentation.metadata
+        results["segmentation_metadata"]["mask_sha256"] = hashlib.sha256(
+            segmentation.mask.astype(np.uint8).tobytes(order="C")
+        ).hexdigest()
+        results.setdefault("modules", {})["segment"] = {"status": "ok", "warnings": []}
 
         handle = registry.seg_handle()
         registry.put(handle, segmentation)
@@ -535,32 +565,25 @@ def make_tool_analyze(
                 artifacts.append(
                     artifact_store.save_plot(request.request_id, ar.module_name, ar.image_png)
                 )
+            status = getattr(ar, "status", "ok")
+            _get_results(registry).setdefault("modules", {})[ar.module_name] = {
+                "status": status if isinstance(status, str) else "ok",
+                "warnings": ar.warnings if isinstance(ar.warnings, list) else [],
+            }
 
-        if task == "measure_basic":
-            mask = segmentation.mask
-            merged_metrics.setdefault("area_pixels", float(mask.sum()))
-            indices = np.argwhere(mask > 0)
-            if indices.size > 0:
-                merged_metrics.setdefault("centroid_x", float(indices[:, 1].mean()))
-                merged_metrics.setdefault("centroid_y", float(indices[:, 0].mean()))
-            else:
-                merged_metrics.setdefault("centroid_x", 0.0)
-                merged_metrics.setdefault("centroid_y", 0.0)
-            merged_metrics.setdefault("ellipticity", 0.0)
-            merged_metrics.setdefault(
-                "mean_intensity",
-                float(np.mean(image[mask > 0])) if mask.sum() > 0 else 0.0,
-            )
+        basic = compute_basic_measurements(image, segmentation)
+        for key, value in basic.items():
+            merged_metrics.setdefault(key, value)
 
         results = _get_results(registry)
         results["measurements"] = merged_metrics
-        artifact_store.save_measurements(request.request_id, merged_metrics)
+        artifact_store.save_measurements(request.request_id, results)
 
-        # Annotate the saved image with contour and centroid
+        # Keep the input immutable; annotations are a separate plot.
         try:
-            image_path: str = registry.get(_image_path_key(registry.request_id))  # type: ignore[assignment]
-            _annotate_image_in_place(image_path, image, segmentation.mask, merged_metrics)
-        except (KeyError, Exception):
+            overlay = _segmentation_overlay(image, segmentation.mask, merged_metrics)
+            artifacts.append(artifact_store.save_plot(request.request_id, "segmentation", overlay))
+        except Exception:
             logger.debug("annotate_image_skipped", exc_info=True)
 
         morphology_text = "\n\n".join(summary_parts)
@@ -600,7 +623,7 @@ def make_tool_run_isophotes(
         try:
             measurements: dict[str, Any] = registry.get(registry.metrics_handle())  # type: ignore[assignment]
         except KeyError:
-            measurements = analyzer.measure_basic(image, segmentation)
+            measurements = compute_basic_measurements(image, segmentation)
 
         results = _get_results(registry)
         results["measurements"] = measurements
@@ -617,6 +640,10 @@ def make_tool_run_isophotes(
             )
         except Exception as exc:
             logger.warning("run_isophotes_failed: %s", exc, exc_info=True)
+            results.setdefault("modules", {})["isophotes"] = {
+                "status": "unavailable",
+                "warnings": ["isophote_fit_failed"],
+            }
             iso_text = isophotes_unavailable_message(lang_of(request))
             rid = registry.request_id
             try:
@@ -628,6 +655,15 @@ def make_tool_run_isophotes(
             return {"isophote_summary": iso_text}
 
         results["isophotes"] = _iso_table
+        suspect = any(row.get("stop_code", 0) != 0 for row in _iso_table)
+        results.setdefault("modules", {})["isophotes"] = {
+            "status": "suspect" if suspect else "ok" if _iso_table else "unavailable",
+            "warnings": (
+                ["isophote_stopping_condition"]
+                if suspect
+                else [] if _iso_table else ["no_valid_isophotes"]
+            ),
+        }
 
         artifacts = _get_artifacts(registry)
         artifacts.append(artifact_store.save_plot(request.request_id, "isophotes", png_bytes))
@@ -750,6 +786,18 @@ def make_tool_generate_final_report(
             registry.put(_summary_key(registry.request_id), summary)
             return {"summary": summary}
 
+        results = _get_results(registry)
+        quality = build_analysis_quality(results, request.task)
+        results["quality"] = quality
+        if quality["status"] == "unavailable":
+            summary = quality_summary(quality, lang)
+            registry.put(_summary_key(registry.request_id), summary)
+            return {"summary": summary}
+        try:
+            morphology_text = str(registry.get(_morphology_key(registry.request_id)))
+        except KeyError:
+            pass
+
         # If the LLM didn't pass morphology_text, recover it from the registry
         # (saved there by analyze_galaxy or run_isophotes). This makes the tool
         # robust against the LLM omitting or truncating the argument.
@@ -774,13 +822,6 @@ def make_tool_generate_final_report(
         if langchain_backend is None:
             summary = morphology_text
         else:
-            simbad_record: dict[str, Any] = {}
-            try:
-                raw = registry.get(_object_info_key(registry.request_id))
-                simbad_record = raw if isinstance(raw, dict) else {}
-            except KeyError:
-                pass
-
             catalog_used, band_used, size_arcmin = _image_metadata_for_report(registry, opts)
 
             summary = langchain_backend.generate_accompanying_summary(
@@ -788,7 +829,7 @@ def make_tool_generate_final_report(
                 band=band_used,
                 morphology_summary=morphology_text,
                 user_message=last_user_message(request) or None,
-                simbad_morph_type=simbad_record.get("morph_type") or None,
+                simbad_morph_type=None,
                 lang=lang,
             )
 
@@ -808,10 +849,16 @@ def make_tool_generate_final_report(
         final_hst_jwst = hst_jwst_info or _reg_text(_hst_jwst_text_key(rid))
 
         if final_object_info:
-            summary += f"\n\n{final_object_info}"
+            label = (
+                "Catalogue reference (SIMBAD)"
+                if lang == "en"
+                else "Referencia de catálogo (SIMBAD)"
+            )
+            summary += f"\n\n{label}: {final_object_info}"
         if final_hst_jwst:
             summary += f"\n{final_hst_jwst}"
 
+        summary = quality_summary(quality, lang) + "\n\n" + summary
         registry.put(_summary_key(registry.request_id), summary)
         return {"summary": summary}
 

@@ -14,6 +14,7 @@ load_dotenv(override=False)
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
+from PIL import Image
 
 from apps.api.auth import verify_api_key
 from apps.api.config import Settings, get_settings
@@ -102,7 +103,9 @@ def get_artifact_image(
         raise HTTPException(status_code=400, detail="Invalid request_id.")
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Image not found for this request_id.")
-    return FileResponse(path, media_type="image/jpeg")
+    with Image.open(path) as image:
+        media_type = Image.MIME.get(image.format or "", "application/octet-stream")
+    return FileResponse(path, media_type=media_type)
 
 
 @app.get("/artifacts/{request_id}/plot/{plot_name}", dependencies=[Depends(verify_api_key)])

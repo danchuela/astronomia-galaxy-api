@@ -404,6 +404,7 @@ class LangChainBackend:
             view_size_arcmin=request.view_size_arcmin,
             view_hips_id=request.view_hips_id,
             image_data=request.image_data,
+            view_metadata=request.view_metadata,
             answer_language=request.answer_language,
         )
 
@@ -440,8 +441,10 @@ class LangChainBackend:
             "Resultado del análisis morfológico:\n"
             f"{morphology_summary}\n\n"
             "Escribe UNA O DOS frases introductorias en español que resuman "
-            "los resultados morfológicos y la fiabilidad del análisis. "
-            "Si se proporciona el tipo morfológico de SIMBAD, menciónalo como referencia. "
+            "qué medidas se han obtenido y cuáles no están disponibles. "
+            "La entrada es una imagen renderizada, no fotometría calibrada. "
+            "No deduzcas clasificación, brazos, formación estelar ni interacciones "
+            "a partir de estos índices. No afirmes fiabilidad científica sin validación. "
             "NO incluyas ningún valor numérico, parámetro CAS, "
             "Sérsic, ni ninguna cifra. Solo una introducción cualitativa breve."
         )
@@ -497,8 +500,10 @@ class LangChainBackend:
             "Result of the morphological analysis:\n"
             f"{morphology_summary}\n\n"
             "Write ONE OR TWO introductory sentences in English that summarise "
-            "the morphological results and the reliability of the analysis. "
-            "If the SIMBAD morphological type is given, mention it as a reference. "
+            "which measurements are available and which are not. "
+            "The input is a rendered image, not calibrated photometry. "
+            "Do not infer classification, spiral arms, star formation or interactions "
+            "from these indices. Do not assert scientific reliability without validation. "
             "Do NOT include any numerical value, CAS or Sérsic parameter, "
             "or any figure. Only a brief qualitative introduction."
         )

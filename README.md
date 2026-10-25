@@ -31,7 +31,7 @@ After resolving a target, the agent pipeline can query:
 
 ### Morphological analysis
 
-See [`packages/galaxy_core/README.md`](packages/galaxy_core/README.md) for metric descriptions (CAS, Sérsic, radial profile, isophotes), value ranges, PSF limitations on ground-based images, and excluded metrics.
+See [`packages/galaxy_core/README.md`](packages/galaxy_core/README.md) for metric conventions, input limitations, quality flags, PSF/noise handling, and validation scope. Rendered-image results are exploratory, not calibrated photometry.
 
 ## Requirements
 
