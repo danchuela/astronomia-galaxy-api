@@ -8,7 +8,7 @@ import hashlib
 import io
 import warnings
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 from astropy.io import fits
@@ -16,6 +16,8 @@ from astropy.io.fits.verify import VerifyError
 from PIL import Image, ImageOps
 from PIL.TiffImagePlugin import TiffImageFile
 from pydantic import BaseModel, Field, field_validator
+
+from packages.galaxy_agent.image_selection import ImageRegion, SourcePoint
 
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 MAX_UPLOAD_PIXELS = 2048 * 2048
@@ -27,6 +29,12 @@ class UploadedImage(BaseModel):
     filename: str = Field(min_length=1, max_length=180)
     data: str = Field(min_length=1, max_length=MAX_ENCODED_LENGTH, repr=False)
     hdu_index: int | None = Field(default=None, ge=0, le=63)
+    psf_hdu_index: int | None = Field(default=None, ge=0, le=63)
+    error_hdu_index: int | None = Field(default=None, ge=0, le=63)
+    error_kind: Literal["sigma", "variance", "inverse_variance"] = "sigma"
+    source_point: SourcePoint | None = None
+    region: ImageRegion | None = None
+    uncertainty_samples: Literal[0, 16] = 0
 
     @field_validator("filename")
     @classmethod
@@ -69,6 +77,18 @@ class UploadedImageError(ValueError):
                 "El HDU seleccionado no contiene una imagen 2D válida.",
                 "The selected HDU does not contain a valid 2D image.",
             ),
+            "ancillary": (
+                "Revisa los HDU auxiliares: el mapa de error debe coincidir con la imagen; "
+                "la PSF debe ser finita, positiva, centrada y de tamaño impar (máximo 129 × 129).",
+                "Check the auxiliary HDUs: the error map must match the image; "
+                "the PSF must be finite, nonnegative, centered and odd-sized (at most 129 × 129).",
+            ),
+            "uncertainty_size": (
+                "La estimación de estabilidad admite imágenes de hasta 512 × 512 píxeles. "
+                "Desactívala para analizar esta imagen sin reducirla.",
+                "Stability estimation supports images up to 512 × 512 pixels. "
+                "Disable it to analyse this image without resizing it.",
+            ),
         }
         text = messages.get(self.code, messages["invalid"])[lang == "en"]
         return text + (" " + self.detail if self.code == "planes" else "")
@@ -81,6 +101,8 @@ class PreparedUpload:
     preview: bytes
     extension: str
     provenance: dict[str, Any]
+    noise_sigma: np.ndarray | None = None
+    psf: np.ndarray | None = None
 
 
 def _check_shape(shape: tuple[int, ...]) -> None:
@@ -96,7 +118,7 @@ def _fits_pixels(raw: bytes, index: int | None) -> tuple[np.ndarray, dict[str, A
         for i, hdu in enumerate(hdus):
             if i >= 64:
                 raise UploadedImageError("invalid")
-            if isinstance(hdu, (fits.PrimaryHDU, fits.ImageHDU)) and hdu.header.get("NAXIS") == 2:
+            if type(hdu) in (fits.PrimaryHDU, fits.ImageHDU) and hdu.header.get("NAXIS") == 2:
                 candidates.append(i)
         if index is None:
             science = [i for i in candidates if hdus[i].name.upper() == "SCI"]
@@ -125,6 +147,40 @@ def _fits_pixels(raw: bytes, index: int | None) -> tuple[np.ndarray, dict[str, A
             "header": metadata,
             "pixel_transform": "BSCALE/BZERO only; no display stretch or resampling",
         }
+
+
+def fits_hdus(raw: bytes) -> list[dict[str, Any]]:
+    """Read bounded headers only; never decompress or load unrelated planes."""
+    with fits.open(io.BytesIO(raw), memmap=False, lazy_load_hdus=True) as hdus:
+        result = []
+        for i, hdu in enumerate(hdus):
+            if i >= 64:
+                raise UploadedImageError("invalid")
+            if type(hdu) in (fits.PrimaryHDU, fits.ImageHDU) and hdu.header.get("NAXIS") == 2:
+                result.append(
+                    {
+                        "index": i,
+                        "name": str(hdu.name)[:40],
+                        "width": int(hdu.header["NAXIS1"]),
+                        "height": int(hdu.header["NAXIS2"]),
+                    }
+                )
+        return result
+
+
+def _auxiliary_pixels(raw: bytes, index: int, shape: tuple[int, ...] | None) -> np.ndarray:
+    with fits.open(io.BytesIO(raw), memmap=False, lazy_load_hdus=True) as hdus:
+        if index >= len(hdus) or type(hdus[index]) not in (fits.PrimaryHDU, fits.ImageHDU):
+            raise UploadedImageError("ancillary")
+        hdu = hdus[index]
+        dims = (int(hdu.header.get("NAXIS2", 0)), int(hdu.header.get("NAXIS1", 0)))
+        if hdu.header.get("NAXIS") != 2:
+            raise UploadedImageError("ancillary")
+        if shape is not None and dims != shape:
+            raise UploadedImageError("ancillary")
+        if shape is None and (min(dims) < 3 or max(dims) > 129 or any(n % 2 == 0 for n in dims)):
+            raise UploadedImageError("ancillary")
+        return np.array(hdu.data, dtype=np.float64, copy=True)
 
 
 def prepare_upload(upload: UploadedImage) -> PreparedUpload:
@@ -201,6 +257,38 @@ def prepare_upload(upload: UploadedImage) -> PreparedUpload:
         buffer = io.BytesIO()
         preview.save(buffer, format="PNG")
         preview_bytes = raster_preview or buffer.getvalue()
+        sigma = psf = None
+        if upload.uncertainty_samples and max(pixels.shape) > 512:
+            raise UploadedImageError("uncertainty_size")
+        auxiliary = (upload.psf_hdu_index, upload.error_hdu_index)
+        if any(i is not None for i in auxiliary):
+            if info["input_kind"] != "fits" or info["hdu_index"] in auxiliary:
+                raise UploadedImageError("ancillary")
+            if auxiliary[0] is not None and auxiliary[0] == auxiliary[1]:
+                raise UploadedImageError("ancillary")
+            if upload.psf_hdu_index is not None:
+                psf = _auxiliary_pixels(raw, upload.psf_hdu_index, None)
+                if not np.isfinite(psf).all() or (psf < 0).any() or psf.sum() <= 0:
+                    raise UploadedImageError("ancillary")
+                psf /= psf.sum()
+                yy, xx = np.indices(psf.shape)
+                if (
+                    abs(float((xx * psf).sum()) - (psf.shape[1] - 1) / 2) > 1
+                    or abs(float((yy * psf).sum()) - (psf.shape[0] - 1) / 2) > 1
+                ):
+                    raise UploadedImageError("ancillary")
+            if upload.error_hdu_index is not None:
+                errors = _auxiliary_pixels(raw, upload.error_hdu_index, pixels.shape)
+                valid = np.isfinite(errors) & (errors > 0)
+                if not valid.any():
+                    raise UploadedImageError("ancillary")
+                sigma = np.full(pixels.shape, np.nan)
+                if upload.error_kind == "sigma":
+                    sigma[valid] = errors[valid]
+                elif upload.error_kind == "variance":
+                    sigma[valid] = np.sqrt(errors[valid])
+                else:
+                    sigma[valid] = 1 / np.sqrt(errors[valid])
         info.update(
             source="upload",
             filename=upload.filename,
@@ -208,7 +296,14 @@ def prepare_upload(upload: UploadedImage) -> PreparedUpload:
             preview_sha256=hashlib.sha256(preview_bytes).hexdigest(),
             shape=list(pixels.shape),
             calibrated=False,
-            psf="not_supplied",
+            psf="user_supplied" if psf is not None else "not_supplied",
+            psf_hdu_index=upload.psf_hdu_index,
+            error_hdu_index=upload.error_hdu_index,
+            noise_model="user_sigma" if sigma is not None else "background_sigma_only",
+            error_kind=upload.error_kind if sigma is not None else None,
+            source_point=upload.source_point.model_dump() if upload.source_point else None,
+            region=upload.region.model_dump() if upload.region else None,
+            uncertainty_samples=upload.uncertainty_samples,
             viewer_capture={},
             coordinates={},
             preview_transform=(
@@ -217,7 +312,7 @@ def prepare_upload(upload: UploadedImage) -> PreparedUpload:
                 else "percentile 1/99.5 + asinh, display only"
             ),
         )
-        return PreparedUpload(pixels, raw, preview_bytes, extension, info)
+        return PreparedUpload(pixels, raw, preview_bytes, extension, info, sigma, psf)
     except UploadedImageError:
         raise
     except (

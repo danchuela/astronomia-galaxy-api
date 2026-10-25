@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 from typing import Any
 
 import numpy as np
 
-from packages.galaxy_core.domain.errors import NoSourceDetectedError
+from packages.galaxy_core.domain.errors import ImageCapacityError, NoSourceDetectedError
 from packages.galaxy_core.domain.models import SegmentationResult
 
 logger = logging.getLogger(__name__)
+_SEP_LOCK = threading.Lock()
+MAX_MORPHOLOGY_STAMP_PIXELS = 768 * 768
+MAX_DETECTION_PIXELS = 300_000
 
 
 def compute_sep_background(image: np.ndarray) -> tuple[np.ndarray, float]:
@@ -24,7 +28,7 @@ def compute_sep_background_maps(image: np.ndarray) -> tuple[np.ndarray, np.ndarr
 
     if image.ndim != 2 or min(image.shape) < 4 or not np.isfinite(image).any():
         raise ValueError("Expected a nonempty two-dimensional image with finite pixels")
-    data = np.ascontiguousarray(image, dtype=np.float32)
+    data = np.ascontiguousarray(image, dtype=np.float64)
     invalid = ~np.isfinite(data)
     safe_data = np.where(invalid, np.nanmedian(np.where(invalid, np.nan, data)), data)
     h, w = data.shape
@@ -32,14 +36,19 @@ def compute_sep_background_maps(image: np.ndarray) -> tuple[np.ndarray, np.ndarr
     bw = max(64, w // 4)
     bh = max(64, h // 4)
     bkg = sep.Background(np.ascontiguousarray(safe_data), mask=invalid, bw=bw, bh=bh)
-    background = np.asarray(bkg.back(), dtype=np.float32)
-    sigma = np.asarray(bkg.rms(), dtype=np.float32)
-    data_sub = np.ascontiguousarray(data - background, dtype=np.float32)
+    background = np.asarray(bkg.back(), dtype=np.float64)
+    sigma = np.asarray(bkg.rms(), dtype=np.float64)
+    data_sub = np.ascontiguousarray(data - background, dtype=np.float64)
     return data_sub, background, sigma
 
 
 def compute_sep_segmap(
-    data_sub: np.ndarray, rms: float | np.ndarray, thresh: float = 2.0
+    data_sub: np.ndarray,
+    rms: float | np.ndarray,
+    thresh: float = 2.0,
+    *,
+    source_point: tuple[float, float] | None = None,
+    excluded_mask: np.ndarray | None = None,
 ) -> tuple[Any, np.ndarray, np.ndarray, int]:
     """Detect sources with SEP; returns (objects, tight_segmap, grown_segmap, main_label)."""
     import sep
@@ -49,18 +58,33 @@ def compute_sep_segmap(
         raise ValueError("Detection threshold must be positive")
     sigma = np.broadcast_to(np.asarray(rms, dtype=float), data_sub.shape)
     invalid = ~np.isfinite(data_sub) | ~np.isfinite(sigma) | (sigma <= 0)
+    if excluded_mask is not None:
+        invalid |= excluded_mask
     if invalid.all():
         raise NoSourceDetectedError("No usable background noise estimate or source")
     err = np.ascontiguousarray(np.where(invalid, 1.0, sigma), dtype=np.float32)
-    objects, segmap = sep.extract(
-        np.ascontiguousarray(np.where(invalid, 0.0, data_sub), dtype=np.float32),
-        thresh=thresh,
-        err=err,
-        mask=invalid,
-        segmentation_map=True,
-        deblend_nthresh=32,
-        deblend_cont=0.05,
-    )
+    if np.count_nonzero((data_sub > thresh * err) & ~invalid) > MAX_DETECTION_PIXELS:
+        raise ImageCapacityError("Detection pixel budget exceeded")
+    # SEP's process-global default holds only 300k active detection pixels.
+    with _SEP_LOCK:
+        prior = sep.get_extract_pixstack()
+        sep.set_extract_pixstack(min(data_sub.size, MAX_DETECTION_PIXELS))
+        try:
+            objects, segmap = sep.extract(
+                np.ascontiguousarray(np.where(invalid, 0.0, data_sub), dtype=np.float32),
+                thresh=thresh,
+                err=err,
+                mask=invalid,
+                segmentation_map=True,
+                deblend_nthresh=32,
+                deblend_cont=0.05,
+            )
+        except Exception as exc:
+            if "internal pixel buffer full" in str(exc):
+                raise ImageCapacityError("Detection pixel budget exceeded") from exc
+            raise
+        finally:
+            sep.set_extract_pixstack(prior)
     if len(objects) == 0:
         raise NoSourceDetectedError("SEP found no sources in the image")
 
@@ -69,6 +93,14 @@ def compute_sep_segmap(
     dist2 = (objects["x"] - cx) ** 2 + (objects["y"] - cy) ** 2
     score = objects["npix"].astype(float) / (dist2 + 1.0)
     main_idx = int(np.argmax(score))
+    if source_point is not None:
+        x, y = source_point
+        if not (np.isfinite(x) and np.isfinite(y) and 0 <= x < w and 0 <= y < h):
+            raise NoSourceDetectedError("Selected point is outside the image")
+        label = int(segmap[min(h - 1, int(round(y))), min(w - 1, int(round(x)))])
+        if label <= 0:
+            raise NoSourceDetectedError("No detected source at the selected point")
+        main_idx = label - 1
     main_label = main_idx + 1  # SEP labels start at 1
 
     tight_segmap = segmap.astype(np.int32)
@@ -180,6 +212,20 @@ def compute_basic_measurements(
     }
 
 
+def check_morphology_budget(labels: np.ndarray, label: int) -> None:
+    """Bound statmorph 0.7.2's default 2.5x stamp without changing its pixels."""
+    rows, columns = np.nonzero(labels == label)
+    if not rows.size:
+        return
+    width, height = int(np.ptp(columns)) + 1, int(np.ptp(rows)) + 1
+    x, y = int(columns.min()) + width // 2, int(rows.min()) + height // 2
+    dist = max(int(max(width, height) * 2.5 / 2), 24)
+    ny, nx = labels.shape
+    pixels = (min(ny, y + dist) - max(0, y - dist)) * (min(nx, x + dist) - max(0, x - dist))
+    if pixels > MAX_MORPHOLOGY_STAMP_PIXELS:
+        raise ImageCapacityError("Morphology stamp pixel budget exceeded")
+
+
 def compute_statmorph_metrics(
     data_sub: np.ndarray,
     segmap_labels: np.ndarray,
@@ -192,6 +238,8 @@ def compute_statmorph_metrics(
 ) -> dict[str, Any]:
     """Full morphological metrics via statmorph: CAS, Sérsic, radial shape."""
     import statmorph
+
+    check_morphology_budget(segmap_labels, main_label)
 
     sigma = (
         np.asarray(noise_sigma, dtype=float)

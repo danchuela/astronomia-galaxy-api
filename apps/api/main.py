@@ -6,7 +6,7 @@ import os
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from dotenv import load_dotenv
 
@@ -18,10 +18,14 @@ from PIL import Image
 
 from apps.api.auth import verify_api_key
 from apps.api.body_limit import AnalysisBodyLimit
+from apps.api.capacity import AnalysisCapacity
 from apps.api.config import Settings, get_settings
 from packages.galaxy_agent.agent_runner import AgentRunner
+from packages.galaxy_agent.image_inspection import inspect_image
 from packages.galaxy_agent.logging_utils import setup_logging
 from packages.galaxy_agent.models import AnalyzeRequest, AnalyzeResponse
+from packages.galaxy_agent.uploads import UploadedImage, UploadedImageError
+from packages.galaxy_core.domain.errors import ImageCapacityError
 
 
 @asynccontextmanager
@@ -41,6 +45,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="astronomIA Galaxy API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(AnalysisBodyLimit)
+app.add_middleware(AnalysisCapacity)
 logger = logging.getLogger(__name__)
 
 
@@ -55,6 +60,16 @@ def get_runner(settings: Annotated[Settings, Depends(get_settings)]) -> AgentRun
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/images/inspect", dependencies=[Depends(verify_api_key)])
+def inspect_uploaded_image(upload: UploadedImage) -> dict[str, Any]:
+    try:
+        return inspect_image(upload)
+    except UploadedImageError as exc:
+        raise HTTPException(status_code=422, detail={"code": exc.code}) from exc
+    except ImageCapacityError as exc:
+        raise HTTPException(status_code=422, detail={"code": "resource_limit"}) from exc
 
 
 @app.post("/analyze", response_model=AnalyzeResponse, dependencies=[Depends(verify_api_key)])

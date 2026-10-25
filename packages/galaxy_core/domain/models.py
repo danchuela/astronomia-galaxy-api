@@ -17,6 +17,7 @@ class SegmentationResult:
     background: np.ndarray | None = None
     noise_sigma: np.ndarray | None = None
     psf: np.ndarray | None = None
+    user_mask: np.ndarray | None = None
 
     @property
     def excluded_mask(self) -> np.ndarray:
@@ -24,6 +25,8 @@ class SegmentationResult:
         if labels is None:
             labels = self.segmap_labels
         excluded = np.zeros(self.mask.shape, dtype=bool)
+        if self.user_mask is not None:
+            excluded |= self.user_mask
         if labels is not None:
             excluded |= (labels > 0) & (labels != self.main_label)
         if self.data_sub is not None:
