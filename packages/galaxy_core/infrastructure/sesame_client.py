@@ -77,17 +77,18 @@ async def _resolve_remote(name: str) -> tuple[float, float]:
         budget = TIMEOUT_SECONDS
     timeout = httpx.Timeout(connect=2.0, read=4.0, write=2.0, pool=2.0)
     try:
-        # Bound the whole lookup, including DNS, body reads and mirror fallback.
+        # Reserve time for the independent mirror even if the primary trickles data.
         async with asyncio.timeout(budget):
             async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
                 try:
-                    text = await _read(
-                        client, f"{SESAME_URL}/SNV?{urllib.parse.quote(name, safe='')}"
-                    )
+                    async with asyncio.timeout(min(4.0, budget / 2)):
+                        text = await _read(
+                            client, f"{SESAME_URL}/SNV?{urllib.parse.quote(name, safe='')}"
+                        )
                     return _parse_sesame(text, name)
                 except TargetNotFoundError:
                     raise
-                except (httpx.HTTPError, ValueError, RuntimeError):
+                except (TimeoutError, httpx.HTTPError, ValueError, RuntimeError):
                     query = urllib.parse.urlencode({"Ident": name, "output.format": "ASCII"})
                     return _parse_mirror(await _read(client, f"{SIMBAD_MIRROR_URL}?{query}"))
     except TargetNotFoundError:

@@ -152,6 +152,25 @@ def test_whole_lookup_deadline_cancels_the_upstream_work(monkeypatch):
     assert cancelled.is_set()
 
 
+def test_primary_cannot_consume_the_mirrors_deadline(monkeypatch):
+    cancelled = threading.Event()
+
+    async def handle(request):
+        if request.url.host == "cds.unistra.fr":
+            try:
+                await asyncio.sleep(3600)
+            finally:
+                cancelled.set()
+        return httpx.Response(200, text=MIRROR)
+
+    transport(monkeypatch, handle)
+    monkeypatch.setenv("SESAME_TIMEOUT", ".2")
+    start = time.monotonic()
+    assert resolver.resolve("M31") == pytest.approx((10.6847083333333, 41.26875))
+    assert time.monotonic() - start < 1
+    assert cancelled.is_set()
+
+
 def test_large_responses_are_bounded(monkeypatch):
     transport(
         monkeypatch, lambda req: httpx.Response(200, text="x" * (resolver.MAX_RESPONSE_BYTES + 1))
@@ -205,7 +224,7 @@ def test_expired_lookup_releases_capacity_before_next_request(monkeypatch):
     async def handle(request):
         nonlocal requests
         requests += 1
-        if requests == 1:
+        if requests <= 2:
             started.set()
             try:
                 await asyncio.sleep(3600)
