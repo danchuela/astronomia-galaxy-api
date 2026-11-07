@@ -7,6 +7,14 @@ class TargetNotFoundError(LookupError):
         super().__init__(f"No position found for '{name}'")
 
 
+class TargetResolutionUnavailableError(RuntimeError):
+    """No trusted resolver could return a position within the lookup budget."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        super().__init__(f"Name resolution temporarily unavailable for '{name}'")
+
+
 class NoSourceDetectedError(LookupError):
     """The supplied field does not contain a measurable detected source."""
 

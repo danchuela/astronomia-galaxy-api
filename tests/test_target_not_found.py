@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import httpx
 import pytest
 import requests
 from fastapi.testclient import TestClient
@@ -20,6 +21,7 @@ from packages.galaxy_core.domain.errors import (
     ImageIntegrityError,
     NoSourceDetectedError,
     TargetNotFoundError,
+    TargetResolutionUnavailableError,
 )
 from packages.galaxy_core.infrastructure import sesame_client
 
@@ -35,14 +37,13 @@ def request_body():
 
 
 def _response(monkeypatch, text, status=200):
-    def raise_for_status():
-        if status >= 400:
-            raise requests.HTTPError(f"HTTP {status}")
-
+    client = httpx.AsyncClient
     monkeypatch.setattr(
-        sesame_client.requests,
-        "get",
-        lambda *a, **kw: SimpleNamespace(text=text, raise_for_status=raise_for_status),
+        sesame_client.httpx,
+        "AsyncClient",
+        lambda **kw: client(
+            transport=httpx.MockTransport(lambda req: httpx.Response(status, text=text)), **kw
+        ),
     )
 
 
@@ -63,7 +64,7 @@ def test_invalid_messier_name_does_not_call_external_services(monkeypatch, name)
     def unexpected(*args, **kwargs):
         pytest.fail("Invalid Messier designations must not call the resolver")
 
-    monkeypatch.setattr(sesame_client.requests, "get", unexpected)
+    monkeypatch.setattr(sesame_client, "_resolve_remote", unexpected)
     with pytest.raises(TargetNotFoundError):
         sesame_client.resolve(name)
 
@@ -85,7 +86,7 @@ def test_valid_messier_boundaries_are_resolved(monkeypatch, name):
 )
 def test_invalid_resolver_response_is_not_unknown_target(monkeypatch, text):
     _response(monkeypatch, text)
-    with pytest.raises(RuntimeError, match="no usable position"):
+    with pytest.raises(TargetResolutionUnavailableError):
         sesame_client.resolve("M81")
 
 
@@ -102,7 +103,7 @@ def test_real_sesame_not_found_payload(monkeypatch):
 
 def test_http_failure_is_not_unknown_target(monkeypatch):
     _response(monkeypatch, "Service unavailable", status=503)
-    with pytest.raises(requests.HTTPError):
+    with pytest.raises(TargetResolutionUnavailableError):
         sesame_client.resolve("M81")
 
 
