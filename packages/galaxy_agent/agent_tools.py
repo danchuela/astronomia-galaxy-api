@@ -50,7 +50,11 @@ from packages.galaxy_core.application.morphology import (
 )
 from packages.galaxy_core.application.resolve_and_fetch_service import resolve_and_fetch
 from packages.galaxy_core.domain import ResolvedTarget, SegmentationResult
-from packages.galaxy_core.domain.errors import ImageCapacityError, TargetNotFoundError
+from packages.galaxy_core.domain.errors import (
+    ImageCapacityError,
+    TargetNotFoundError,
+    TargetResolutionUnavailableError,
+)
 from packages.galaxy_core.domain.imaging import BAND_TO_SURVEY
 from packages.galaxy_core.infrastructure.dss2_client import (
     fetch_cutout_jpeg as fetch_dss2_cutout_jpeg,
@@ -210,7 +214,7 @@ def _resolve_target(request: AnalyzeRequest, opts: dict[str, Any]) -> ResolvedTa
             return resolve_and_fetch(
                 name=name, catalog=catalog_p, band=band_p, size_arcmin=size_opt
             )
-        except TargetNotFoundError:
+        except (TargetNotFoundError, TargetResolutionUnavailableError):
             raise
         except Exception as exc:  # noqa: BLE001
             errors.append(str(exc))
