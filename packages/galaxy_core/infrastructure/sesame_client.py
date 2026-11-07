@@ -89,7 +89,15 @@ async def _resolve_remote(name: str) -> tuple[float, float]:
                 except TargetNotFoundError:
                     raise
                 except (TimeoutError, httpx.HTTPError, ValueError, RuntimeError):
-                    query = urllib.parse.urlencode({"Ident": name, "output.format": "ASCII"})
+                    query = urllib.parse.urlencode(
+                        {
+                            "Ident": name,
+                            "output.format": "ASCII",
+                            "obj.bibsel": "off",
+                            "obj.messel": "off",
+                            "obj.notesel": "off",
+                        }
+                    )
                     return _parse_mirror(await _read(client, f"{SIMBAD_MIRROR_URL}?{query}"))
     except TargetNotFoundError:
         raise

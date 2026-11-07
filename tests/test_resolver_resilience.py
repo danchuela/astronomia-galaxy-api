@@ -52,6 +52,10 @@ def test_primary_failure_uses_independent_mirror(monkeypatch, failure):
     assert [call.url.host for call in calls] == ["cds.unistra.fr", "simbad.cfa.harvard.edu"]
     assert calls[0].url.path.endswith("/SNV")
     assert "-ox&" not in str(calls[0].url)
+    assert calls[1].url.params["Ident"] == "Andromeda"
+    assert all(
+        calls[1].url.params[key] == "off" for key in ("obj.bibsel", "obj.messel", "obj.notesel")
+    )
 
 
 def test_primary_success_does_not_query_mirror(monkeypatch):
