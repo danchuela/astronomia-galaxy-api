@@ -25,6 +25,17 @@ def image_capacity_message(lang: str = "es") -> str:
 
 Lang = Literal["es", "en"]
 
+
+def target_resolution_unavailable_message(lang: str = "es") -> str:
+    return (
+        "Ahora no puedo consultar los catálogos para localizar ese objeto. "
+        "Vuelve a intentarlo en unos minutos o indica sus coordenadas."
+        if lang == "es"
+        else "I cannot currently query the catalogues to locate that object. "
+        "Please try again in a few minutes or provide its coordinates."
+    )
+
+
 TARGET_REQUIRED_MESSAGE = (
     "Indica de qué galaxia quieres la imagen o el análisis "
     "(por nombre, p. ej. M104, o por coordenadas). "

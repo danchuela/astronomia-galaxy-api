@@ -19,6 +19,7 @@ from packages.galaxy_agent.messages import (
     lang_of,
     no_summary_message,
     target_not_found_message,
+    target_resolution_unavailable_message,
     the_object,
     viewer_ready_message,
 )
@@ -31,6 +32,7 @@ from packages.galaxy_core.domain.errors import (
     ImageIntegrityError,
     NoSourceDetectedError,
     TargetNotFoundError,
+    TargetResolutionUnavailableError,
 )
 
 logger = logging.getLogger(__name__)
@@ -118,6 +120,23 @@ class TaskOrchestrator:
                             if status_msg:
                                 yield {"type": "status", "message": status_msg}
 
+        except TargetResolutionUnavailableError as exc:
+            registry.clear()
+            logger.warning("target_resolution_unavailable", extra={"request_id": rid})
+            summary = target_resolution_unavailable_message(lang)
+            yield {"type": "summary", "summary": summary}
+            yield {
+                "type": "end",
+                "request_id": rid,
+                "status": "error",
+                "error_code": "target_resolution_unavailable",
+                "summary": summary,
+                "results": {"target_resolution": {"status": "unavailable", "name": exc.name}},
+                "artifacts": [],
+                "provenance": build_provenance(langsmith_enabled).model_dump(),
+                "warnings": ["target_resolution_unavailable"],
+            }
+            return
         except TargetNotFoundError as exc:
             registry.clear()
             logger.info("target_not_found", extra={"request_id": rid, "target": exc.name})
