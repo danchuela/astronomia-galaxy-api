@@ -3,20 +3,25 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import os
 import re
 import urllib.parse
+from collections.abc import Callable
 
 import httpx
 from astropy import units as u
 from astropy.coordinates import SkyCoord
 
 from packages.galaxy_core.domain.errors import TargetNotFoundError, TargetResolutionUnavailableError
+from packages.galaxy_core.infrastructure import availability
 
 SESAME_JPOS_RE = re.compile(r"^%J\s+([+-]?[\d.]+)\s+([+-]?[\d.]+)", re.MULTILINE)
 SESAME_URL = "https://cds.unistra.fr/cgi-bin/nph-sesame"
 SIMBAD_MIRROR_URL = "https://simbad.cfa.harvard.edu/simbad/sim-id"
+SIMBAD_MIRROR_IDIA_URL = "https://simbad.idia.ac.za/simbad/sim-id"
+NED_LOOKUP_URL = "https://ned.ipac.caltech.edu/srs/ObjectLookup"
 TIMEOUT_SECONDS = 12.0
 MAX_RESPONSE_BYTES = 128 * 1024
 _ICRS_RE = re.compile(
@@ -65,6 +70,35 @@ async def _read(client: httpx.AsyncClient, url: str) -> str:
         return data.decode(response.encoding or "utf-8", errors="replace")
 
 
+def _parse_ned(text: str) -> tuple[float, float]:
+    """NED ObjectLookup JSON: Preferred.Position.RA/Dec in degrees (J2000)."""
+    try:
+        position = json.loads(text)["Preferred"]["Position"]
+        return _position(float(position["RA"]), float(position["Dec"]))
+    except (ValueError, KeyError, TypeError) as exc:
+        # A NED-only negative answer cannot rule out other catalogues either.
+        raise ValueError("NED returned no usable J2000 position") from exc
+
+
+def _fallbacks(name: str) -> list[tuple[str, str, Callable[[str], tuple[float, float]]]]:
+    """Independent services tried in order when Sesame fails (none of them is hosted by the CDS)."""
+    query = urllib.parse.urlencode(
+        {
+            "Ident": name,
+            "output.format": "ASCII",
+            "obj.bibsel": "off",
+            "obj.messel": "off",
+            "obj.notesel": "off",
+        }
+    )
+    ned = urllib.parse.urlencode({"name": name})
+    return [
+        ("simbad_harvard", f"{SIMBAD_MIRROR_URL}?{query}", _parse_mirror),
+        ("simbad_idia", f"{SIMBAD_MIRROR_IDIA_URL}?{query}", _parse_mirror),
+        ("ned", f"{NED_LOOKUP_URL}?{ned}", _parse_ned),
+    ]
+
+
 async def _resolve_remote(name: str) -> tuple[float, float]:
     try:
         configured = float(os.environ.get("SESAME_TIMEOUT", str(TIMEOUT_SECONDS)))
@@ -77,28 +111,41 @@ async def _resolve_remote(name: str) -> tuple[float, float]:
         budget = TIMEOUT_SECONDS
     timeout = httpx.Timeout(connect=2.0, read=4.0, write=2.0, pool=2.0)
     try:
-        # Reserve time for the independent mirror even if the primary trickles data.
+        # Reserve time for the independent mirrors even if the primary trickles data.
         async with asyncio.timeout(budget):
             async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
-                try:
-                    async with asyncio.timeout(min(4.0, budget / 2)):
-                        text = await _read(
-                            client, f"{SESAME_URL}/SNV?{urllib.parse.quote(name, safe='')}"
-                        )
-                    return _parse_sesame(text, name)
-                except TargetNotFoundError:
-                    raise
-                except (TimeoutError, httpx.HTTPError, ValueError, RuntimeError):
-                    query = urllib.parse.urlencode(
-                        {
-                            "Ident": name,
-                            "output.format": "ASCII",
-                            "obj.bibsel": "off",
-                            "obj.messel": "off",
-                            "obj.notesel": "off",
-                        }
-                    )
-                    return _parse_mirror(await _read(client, f"{SIMBAD_MIRROR_URL}?{query}"))
+                # A service that just failed is skipped for a while (availability.py),
+                # so requests do not wait for the CDS timeout every time it is down.
+                if availability.is_available("sesame"):
+                    try:
+                        async with asyncio.timeout(min(4.0, budget / 2)):
+                            text = await _read(
+                                client, f"{SESAME_URL}/SNV?{urllib.parse.quote(name, safe='')}"
+                            )
+                        position = _parse_sesame(text, name)
+                        availability.mark_up("sesame")
+                        return position
+                    except TargetNotFoundError:
+                        availability.mark_up("sesame")
+                        raise
+                    except (TimeoutError, httpx.HTTPError):
+                        availability.mark_down("sesame")
+                    except (ValueError, RuntimeError):
+                        pass  # Sesame answered, but without a usable position
+                last_error: Exception | None = None
+                for service, url, parse in _fallbacks(name):
+                    if not availability.is_available(service):
+                        continue
+                    try:
+                        position = parse(await _read(client, url))
+                        availability.mark_up(service)
+                        return position
+                    except httpx.HTTPError as exc:
+                        availability.mark_down(service)
+                        last_error = exc
+                    except (ValueError, RuntimeError) as exc:
+                        last_error = exc
+                raise RuntimeError("No resolver returned a usable position") from last_error
     except TargetNotFoundError:
         raise
     except (TimeoutError, httpx.HTTPError, ValueError, RuntimeError) as exc:
