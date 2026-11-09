@@ -238,6 +238,9 @@ def test_expired_lookup_releases_capacity_before_next_request(monkeypatch):
 
     transport(monkeypatch, handle)
     monkeypatch.setenv("SESAME_TIMEOUT", ".15")
+    # This test is about capacity: let the next request try Sesame again at once
+    # (by default a service that timed out is skipped for a while, see availability.py).
+    monkeypatch.setenv("SERVICE_COOL_DOWN_SECONDS", "0")
     small = FastAPI()
     small.add_middleware(AnalysisCapacity)
 
