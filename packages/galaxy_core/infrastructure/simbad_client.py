@@ -8,10 +8,18 @@ from typing import Any
 
 import requests
 
+from packages.galaxy_core.infrastructure import availability
+
 logger = logging.getLogger(__name__)
 
 SIMBAD_TAP_URL = "https://simbad.cds.unistra.fr/simbad/sim-tap/sync"
-TIMEOUT_SECONDS = 15
+SIMBAD_TAP_SERVICES = (
+    ("simbad_cds", SIMBAD_TAP_URL),
+    ("simbad_harvard", "https://simbad.cfa.harvard.edu/simbad/sim-tap/sync"),
+    ("simbad_idia", "https://simbad.idia.ac.za/simbad/sim-tap/sync"),
+)
+CONNECT_TIMEOUT_SECONDS = 3
+TIMEOUT_SECONDS = 6  # read timeout per service (was 15 s with a single service)
 
 
 def query_object(name: str) -> dict[str, Any] | None:
@@ -38,12 +46,26 @@ def query_object(name: str) -> dict[str, Any] | None:
         "query": adql,
     }
 
-    try:
-        resp = requests.get(SIMBAD_TAP_URL, params=params, timeout=timeout_s)
-        resp.raise_for_status()
-        result = resp.json()
-    except Exception:
-        logger.warning("simbad_query_failed", extra={"object_name": name}, exc_info=True)
+    # The CDS first, then the SIMBAD mirrors (same database and TAP service). A mirror that
+    # just failed is skipped for a while (availability.py) so a request does not wait for it.
+    result = None
+    for service, url in SIMBAD_TAP_SERVICES:
+        if not availability.is_available(service):
+            continue
+        try:
+            resp = requests.get(url, params=params, timeout=(CONNECT_TIMEOUT_SECONDS, timeout_s))
+            resp.raise_for_status()
+            result = resp.json()
+            availability.mark_up(service)
+            break
+        except Exception:
+            availability.mark_down(service)
+            logger.warning(
+                "simbad_query_failed",
+                extra={"object_name": name, "service": service},
+                exc_info=True,
+            )
+    if result is None:
         return None
 
     rows = result.get("data", [])
