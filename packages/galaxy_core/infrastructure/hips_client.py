@@ -21,9 +21,10 @@ SURVEY_TO_HIPS: dict[str, str] = {
     "WISE": "CDS/P/allWISE/color",
     "WISE-W1": "CDS/P/allWISE/W1",
     "ALLWISE": "CDS/P/allWISE/color",
-    "GALEX": "CDS/P/GALEXGR6_7/NUV",
-    "GALEX-NUV": "CDS/P/GALEXGR6_7/NUV",
-    "GALEX-FUV": "CDS/P/GALEXGR6_7/FUV",
+    # GALEX GR6 AIS: also hosted by IRSA, so the viewer can open it without the CDS.
+    "GALEX": "CDS/P/GALEXGR6/AIS/NUV",
+    "GALEX-NUV": "CDS/P/GALEXGR6/AIS/NUV",
+    "GALEX-FUV": "CDS/P/GALEXGR6/AIS/FUV",
     "GALEX-COLOR": "CDS/P/GALEXGR6_7/color",
     "RASS": "CDS/P/RASS",
     "XMM": "xcatdb/P/XMM/PN/color",

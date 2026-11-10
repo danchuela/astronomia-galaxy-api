@@ -111,6 +111,11 @@ _HIPS_SURVEY_LABELS: dict[str, str] = {
     "CDS/P/GALEXGR6_7/color": "GALEX",
     "CDS/P/RASS": "RASS",
     "xcatdb/P/XMM/PN/color": "XMM",
+    # Viewer products hosted outside the CDS (incident of 2026-10-28).
+    "CDS/P/GALEXGR6/AIS/FUV": "GALEX-FUV",
+    "CDS/P/GALEXGR6/AIS/NUV": "GALEX-NUV",
+    "ESDC/P/XMM/EPIC-RGB": "XMM",
+    "erosita/dr1/rate/rgb": "eROSITA",
     "CDS/P/NVSS": "NVSS",
 }
 
@@ -150,7 +155,7 @@ def _band_from_survey(survey: str | None) -> str | None:
         return "infrarrojo"
     if any(token in low for token in ("galex", "ultraviolet")):
         return "ultravioleta"
-    if any(token in low for token in ("rass", "xmm", "x-ray", "xray")):
+    if any(token in low for token in ("rass", "xmm", "erosita", "x-ray", "xray")):
         return "rayos X"
     if any(token in low for token in ("nvss", "radio")):
         return "radio"
