@@ -56,6 +56,7 @@ from packages.galaxy_core.domain.errors import (
     TargetResolutionUnavailableError,
 )
 from packages.galaxy_core.domain.imaging import BAND_TO_SURVEY
+from packages.galaxy_core.infrastructure import availability
 from packages.galaxy_core.infrastructure.dss2_client import (
     fetch_cutout_jpeg as fetch_dss2_cutout_jpeg,
 )
@@ -77,6 +78,22 @@ from packages.galaxy_core.infrastructure.simbad_client import query_object as si
 logger = logging.getLogger(__name__)
 
 _IMAGE_DOWNLOAD_TIMEOUT = 30
+_CONNECT_TIMEOUT = 5
+
+# Same field and band from a host outside the CDS, used when hips2fits fails.
+# Keys are the display labels of _HIPS_SURVEY_LABELS (upper case).
+_HIPS_EQUIVALENT_SURVEYS: dict[str, tuple[str, ...]] = {
+    "SDSS": ("SDSS", "DSS2"),
+    "PANSTARRS": ("SDSS", "DSS2"),
+    "DECALS": ("SDSS", "DSS2"),
+    "DSS2": ("DSS2",),
+    "DSS2-RED": ("DSS2",),
+    "DSS2-BLUE": ("DSS2-BLUE",),
+    "2MASS": ("2MASS-J",),
+    "2MASS-J": ("2MASS-J",),
+    "GALEX": ("GALEX",),
+    "GALEX-NUV": ("GALEX",),
+}
 
 _HIPS_SURVEY_LABELS: dict[str, str] = {
     "CDS/P/SDSS9/color": "SDSS",
@@ -245,6 +262,52 @@ def _download_image(
     resp = _http.get(resolved.image_url, timeout=_IMAGE_DOWNLOAD_TIMEOUT)
     resp.raise_for_status()
     return artifact_store.save_image(request_id, resp.content).path
+
+
+def _fetch_viewer_field(
+    request_id: str,
+    ra_deg: float,
+    dec_deg: float,
+    hips_id: str,
+    size_arcmin: float,
+    artifact_store: ArtifactWriter,
+) -> tuple[str, str]:
+    """Download the field shown in the viewer. Returns (artifact path, survey used).
+
+    hips2fits only runs at the CDS. When it fails (CDS incident of 2026-10-28), the same
+    field is downloaded from an equivalent survey of the same band hosted elsewhere
+    (SDSS SkyServer, STScI DSS2, MAST GALEX, IRSA 2MASS). A field is never replaced by
+    another band: without an equivalent, the hips2fits error is raised as before.
+    """
+    hips_error: Exception | None = None
+    if availability.is_available("hips2fits"):
+        url = get_image_url_from_hips_id(ra_deg, dec_deg, hips_id, size_arcmin)
+        try:
+            resp = _http.get(url, timeout=(_CONNECT_TIMEOUT, _IMAGE_DOWNLOAD_TIMEOUT))
+            resp.raise_for_status()
+            availability.mark_up("hips2fits")
+            return artifact_store.save_image(request_id, resp.content).path, hips_id
+        except _http.RequestException as exc:
+            availability.mark_down("hips2fits")
+            hips_error = exc
+            logger.warning("hips2fits_failed", extra={"hips_id": hips_id}, exc_info=True)
+
+    label = (_survey_display_label(hips_id) or "").upper()
+    for survey in _HIPS_EQUIVALENT_SURVEYS.get(label, ()):
+        try:
+            resolved = resolve_and_fetch(
+                ra_deg=ra_deg, dec_deg=dec_deg, catalog=survey, size_arcmin=size_arcmin
+            )
+            return _download_image(request_id, resolved, artifact_store), survey
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "viewer_field_fallback_failed",
+                extra={"hips_id": hips_id, "survey": survey},
+                exc_info=True,
+            )
+    if hips_error is not None:
+        raise hips_error
+    raise RuntimeError(f"hips2fits is unavailable and {hips_id!r} has no equivalent survey")
 
 
 def _segmentation_overlay(
@@ -458,24 +521,24 @@ def make_tool_resolve_and_fetch_image(
 
         elif has_viewer and request.view_hips_id:
             size = request.view_size_arcmin or 10.0
-            remote_url = get_image_url_from_hips_id(
+            image_path, survey_used = _fetch_viewer_field(
+                rid,
                 request.view_ra_deg,  # type: ignore[arg-type]
                 request.view_dec_deg,  # type: ignore[arg-type]
                 request.view_hips_id,
                 size,
+                artifact_store,
             )
-            resp = _http.get(remote_url, timeout=_IMAGE_DOWNLOAD_TIMEOUT)
-            resp.raise_for_status()
-            artifact = artifact_store.save_image(rid, resp.content)
-            artifacts.append(artifact)
-            image_path = artifact.path
+            artifacts.append(Artifact(type="image", path=image_path))
             coordinates = {
                 "ra_deg": request.view_ra_deg,
                 "dec_deg": request.view_dec_deg,
-                "survey_used": request.view_hips_id,
+                "survey_used": survey_used,
                 "hips_id": request.view_hips_id,
                 "size_arcmin": size,
             }
+            if survey_used != request.view_hips_id:
+                coordinates["image_fallback_from"] = request.view_hips_id
 
         else:
             resolved = _resolve_target(request, opts)
